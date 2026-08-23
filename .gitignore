@@ -1,0 +1,7 @@
+config.env
+repos/
+worktrees/
+logs/
+state/
+APP_PRIVATE_KEY
+*.pem
