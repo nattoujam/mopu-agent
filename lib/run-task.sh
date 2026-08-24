@@ -10,8 +10,10 @@ post_comment() {
 # 付いていないラベルの削除は gh がエラーにするため、追加と削除を分けて実行する
 set_labels() {
   local issue="$1" add="$2" l
-  gh issue edit "$issue" -R "$REPO" --add-label "$add" >/dev/null 2>&1 \
-    || warn "ラベル '$add' を付けられませんでした（setup.sh でラベルを作成してください）"
+  if ! gh issue edit "$issue" -R "$REPO" --add-label "$add" >/dev/null 2>&1; then
+    warn "ラベル '$add' を付けられませんでした（setup.sh でラベルを作成してください）。既存のラベルは変更しません"
+    return 0
+  fi
   for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_DONE" "$LABEL_FAILED"; do
     [[ $l == "$add" ]] && continue
     gh issue edit "$issue" -R "$REPO" --remove-label "$l" >/dev/null 2>&1 || true

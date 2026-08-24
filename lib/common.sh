@@ -70,3 +70,16 @@ is_allowed_actor() {
   done
   return 1
 }
+
+# ラベルが未作成のまま poll.sh を走らせると、set_labels の付与だけが失敗して
+# 削除は通るため、Issue に付いていた agent:queued が外れてしまう
+require_labels_ready() {
+  local existing missing=() l
+  existing=$(gh label list -R "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null) \
+    || die "ラベル一覧を取得できませんでした: $REPO"
+  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_DONE" "$LABEL_FAILED"; do
+    grep -qxF -- "$l" <<<"$existing" || missing+=("$l")
+  done
+  (( ${#missing[@]} == 0 )) \
+    || die "ラベルが未作成です (${missing[*]})。先に ./setup.sh を実行してください"
+}
