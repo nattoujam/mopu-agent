@@ -12,7 +12,7 @@ ensure_repo() {
 # 使用中の worktree が残っていると同名ブランチを再作成できないため、
 # 前回の失敗で残ったものは呼び出し側が明示的に削除する
 create_worktree() {
-  local branch="$1" wt="$2" base="origin/$DEFAULT_BRANCH"
+  local branch="$1" wt="$2" base="origin/$BASE_BRANCH"
   # 同じ Issue への 2 回目以降の作業では、既存 PR のコミットを捨てないよう
   # リモートブランチがあればそちらをベースにする
   if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then

@@ -23,7 +23,6 @@ load_config() {
   # 第三者が書いた Issue/コメントを無条件で実行しないための必須ガード
   [[ -n ${ALLOWED_ACTORS:-} ]] || die "config.env: ALLOWED_ACTORS が空です。誰のタスクを実行するか明示してください"
 
-  : "${DEFAULT_BRANCH:=main}"
   : "${TRIGGER_COMMAND:=/claude}"
   : "${LABEL_QUEUED:=agent:queued}"
   : "${LABEL_RUNNING:=agent:running}"
@@ -82,4 +81,13 @@ require_labels_ready() {
   done
   (( ${#missing[@]} == 0 )) \
     || die "ラベルが未作成です (${missing[*]})。先に ./setup.sh を実行してください"
+}
+
+# config で明示されていればそれを優先する（PR のベースを既定ブランチ以外に
+# したい場合があるため）。gh で引く都合上、App 認証を張った後に呼ぶ
+resolve_base_branch() {
+  [[ -n ${BASE_BRANCH:-} ]] && return 0
+  BASE_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)
+  [[ -n $BASE_BRANCH ]] || die "既定ブランチを取得できませんでした: $REPO"
+  log "ベースブランチ: $BASE_BRANCH"
 }

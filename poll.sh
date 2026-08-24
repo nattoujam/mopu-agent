@@ -43,6 +43,7 @@ exec 9>"$STATE_DIR/poll.lock"
 flock -n 9 || die "別の poll.sh が実行中です"
 
 setup_app_auth
+resolve_base_branch
 require_labels_ready
 
 RATE_LIMIT_HIT=0

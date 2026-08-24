@@ -161,7 +161,7 @@ run_task() {
   pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
   if [[ -z $pr_url ]]; then
     if pr_out=$(gh pr create -R "$REPO" --draft \
-      --base "$DEFAULT_BRANCH" --head "$branch" \
+      --base "$BASE_BRANCH" --head "$branch" \
       --title "$title" \
       --body "$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")" 2>&1)
     then
