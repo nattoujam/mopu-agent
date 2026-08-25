@@ -137,6 +137,16 @@ run_task() {
   fi
 
   if [[ $(git -C "$wt" rev-parse HEAD) == "$head_before" ]]; then
+    if [[ -n $(git -C "$wt" status --porcelain) ]]; then
+      err "[$task_id] コミットされていない変更が残っています"
+      set_labels "$number" "$LABEL_FAILED"
+      post_comment "$number" "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
+        "${result:-（応答なし）}" "$wt")"
+      record_spend "$task_id" "$cost" "$pct_before" ""
+      log "[$task_id] worktree を調査用に残します: $wt"
+      return 1
+    fi
+
     log "[$task_id] コード変更なし。結果のみコメントします"
     set_labels "$number" "$LABEL_DONE"
     post_comment "$number" "${result:-（応答なし）}"
