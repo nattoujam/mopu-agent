@@ -97,3 +97,10 @@ init_seen_baseline() {
     log "初回実行のため、これ以降に投稿されたコメントのみを対象にします"
   fi
 }
+
+# 進行中（未マージ）のエージェント製 PR のブランチ名を列挙する。
+# 手で作った agent/bot-check のようなブランチを拾わないよう prefix で絞る
+list_open_agent_branches() {
+  gh pr list -R "$REPO" --state open --limit 100 --json headRefName \
+    --jq ".[].headRefName | select(startswith(\"$BRANCH_PREFIX\"))" 2>/dev/null
+}

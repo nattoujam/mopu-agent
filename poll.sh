@@ -47,10 +47,33 @@ resolve_base_branch
 require_labels_ready
 
 RATE_LIMIT_HIT=0
+LAST_TASK_OPENED_PR=0
+
+# --task は人が明示的に指定した 1 件なので、進行中 PR のゲートは適用しない
+if [[ -n $ONLY_TASK ]] && (( MAX_OPEN_AGENT_PRS > 0 )); then
+  log "手動指定 (--task) のため、進行中 PR のゲートを無視します"
+  MAX_OPEN_AGENT_PRS=0
+fi
+
+OPEN_AGENT_BRANCHES=()
+mapfile -t OPEN_AGENT_BRANCHES < <(list_open_agent_branches)
+OPEN_AGENT_PRS=${#OPEN_AGENT_BRANCHES[@]}
+(( OPEN_AGENT_PRS )) && log "進行中の PR: $OPEN_AGENT_PRS 件 (${OPEN_AGENT_BRANCHES[*]})"
 
 gate() {
   (( IGNORE_BUDGET )) && { log "利用枠のゲートを無視します (--ignore-budget)"; return 0; }
   check_budget
+}
+
+# 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
+# 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる
+in_flight_blocked() {
+  local number="$1" b
+  (( MAX_OPEN_AGENT_PRS > 0 )) || return 1
+  for b in "${OPEN_AGENT_BRANCHES[@]}"; do
+    [[ $b == "${BRANCH_PREFIX}${number}" ]] && return 1
+  done
+  (( OPEN_AGENT_PRS >= MAX_OPEN_AGENT_PRS ))
 }
 
 # --- タスクの収集 ---
@@ -79,7 +102,11 @@ log "$(wc -l <<<"$tasks") 件のタスクを検出しました"
 
 if (( DRY_RUN )); then
   while IFS= read -r t; do
-    jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"' <<<"$t"
+    line=$(jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"' <<<"$t")
+    if in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
+      line+="  ← 進行中の PR があるためスキップ"
+    fi
+    printf '%s\n' "$line"
   done <<<"$tasks"
   gate
   exit 0
@@ -98,6 +125,12 @@ while IFS= read -r t; do
     continue
   fi
 
+  number=$(jq -r '.number' <<<"$t")
+  if in_flight_blocked "$number"; then
+    warn "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
+    continue
+  fi
+
   # タスクごとに枠を確認し、連続処理で閾値を跨がないようにする
   if ! gate; then
     warn "利用枠のため以降のタスクを中止します"
@@ -105,7 +138,6 @@ while IFS= read -r t; do
   fi
 
   kind=$(jq -r '.kind' <<<"$t")
-  number=$(jq -r '.number' <<<"$t")
   title=$(jq -r '.title' <<<"$t")
   body=$(jq -r '.body' <<<"$t")
   comment=$(jq -r '.comment // ""' <<<"$t")
@@ -113,6 +145,10 @@ while IFS= read -r t; do
 
   ensure_repo
   run_task "$kind" "$number" "$title" "$body" "$comment"
+  if (( LAST_TASK_OPENED_PR )); then
+    OPEN_AGENT_BRANCHES+=("${BRANCH_PREFIX}${number}")
+    (( OPEN_AGENT_PRS++ ))
+  fi
   mark_seen "$comment_id"
   (( processed++ ))
 done <<<"$tasks"

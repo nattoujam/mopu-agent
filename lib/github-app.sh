@@ -80,6 +80,11 @@ setup_app_auth() {
   if app_bot_identity; then
     export GIT_AUTHOR_NAME="$APP_BOT_NAME"  GIT_AUTHOR_EMAIL="$APP_BOT_EMAIL"
     export GIT_COMMITTER_NAME="$APP_BOT_NAME" GIT_COMMITTER_EMAIL="$APP_BOT_EMAIL"
+    # 分解で作られた sub issue の author は bot 自身になるため、許可アクターに
+    # 加えないと次のポーリングで弾かれる。bot 名義で Issue を作れるのは秘密鍵の
+    # 持ち主だけなので、第三者の迂回には使えない。
+    # gh の author.login は "app/<slug>"、REST の user.login は "<slug>[bot]"
+    ALLOWED_ACTORS+=" app/${APP_BOT_NAME%\[bot\]} $APP_BOT_NAME"
     log "GitHub App として動作します: $APP_BOT_NAME"
   else
     warn "App の bot 情報を取得できませんでした。コミット author は既定値になります"

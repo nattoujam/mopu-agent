@@ -20,6 +20,105 @@ set_labels() {
   done
 }
 
+PLAN_FILE_NAME='.gh-agent-plan.json'
+
+# 分解で生まれた Issue を再分解させないための判定。本文のマーカーは自分で
+# 埋めるので確実に効き、parent_issue_url は GitHub 上で手動で紐付けられた
+# sub issue も拾える。親のない Issue ではこのキー自体が存在しない
+is_sub_issue() {
+  local number="$1" body="$2"
+  [[ $body == *"$SUB_ISSUE_MARKER"* ]] && return 0
+  [[ -n $(gh api "repos/$REPO/issues/$number" --jq '.parent_issue_url // empty' 2>/dev/null) ]]
+}
+
+validate_plan() {
+  jq -e --argjson max "$MAX_SUB_ISSUES" '
+    if (.sub_issues | type) != "array" then false
+    elif (.sub_issues | length) < 1 or (.sub_issues | length) > $max then false
+    else all(.sub_issues[]; (.title | type) == "string" and (.title | length) > 0)
+    end' "$1" >/dev/null 2>&1
+}
+
+# 作成した sub issue を "- #番号 タイトル" の行として標準出力へ返す
+create_sub_issues() {
+  local parent="$1" plan="$2" count i title body resp num id
+  count=$(jq '.sub_issues | length' "$plan")
+  for (( i = 0; i < count; i++ )); do
+    title=$(jq -r ".sub_issues[$i].title" "$plan")
+    body=$(jq -r ".sub_issues[$i].body // \"\"" "$plan")
+    body=$(printf '%s\n\n---\n%s\n%s #%s -->\n' \
+      "$body" "$COMMENT_MARKER" "$SUB_ISSUE_MARKER" "$parent")
+
+    if ! resp=$(gh api "repos/$REPO/issues" \
+      -f "title=$title" -f "body=$body" -f "labels[]=$LABEL_QUEUED" 2>&1)
+    then
+      warn "sub issue の作成に失敗しました: $title"
+      warn "$(head -3 <<<"$resp")"
+      continue
+    fi
+
+    num=$(jq -r '.number' <<<"$resp")
+    id=$(jq -r '.id' <<<"$resp")
+
+    # 親子の紐付けだけ失敗しても、作成済みの Issue は残して先へ進む
+    if ! gh api -X POST "repos/$REPO/issues/$parent/sub_issues" \
+      -F "sub_issue_id=$id" >/dev/null 2>&1
+    then
+      warn "#$num を #$parent の sub issue に紐付けられませんでした"
+    fi
+
+    printf -- '- #%s %s\n' "$num" "$title"
+  done
+}
+
+# 分解パス。sub issue を作って親 Issue にまとめをコメントする
+handle_plan() {
+  local task_id="$1" number="$2" plan="$3" result="$4" cost="$5" pct_before="$6" task_dir="$7"
+
+  if ! validate_plan "$plan"; then
+    err "[$task_id] $PLAN_FILE_NAME の内容が不正です"
+    set_labels "$number" "$LABEL_FAILED"
+    post_comment "$number" "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
+      "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
+    record_spend "$task_id" "$cost" "$pct_before" ""
+    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+    return 1
+  fi
+
+  local summary reason created
+  summary=$(jq -r '.summary // ""' "$plan")
+  reason=$(jq -r '.reason // ""' "$plan")
+
+  log "[$task_id] タスクを分解します ($(jq '.sub_issues | length' "$plan") 件)"
+  created=$(create_sub_issues "$number" "$plan")
+
+  if [[ -z $created ]]; then
+    err "[$task_id] sub issue を 1 件も作成できませんでした"
+    set_labels "$number" "$LABEL_FAILED"
+    post_comment "$number" "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$AGENT_DIR/logs/$task_id\`"
+    record_spend "$task_id" "$cost" "$pct_before" ""
+    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+    return 1
+  fi
+
+  set_labels "$number" "$LABEL_DONE"
+  post_comment "$number" "$(
+    printf '%s\n\n---\n\n**このタスクは大きいため、実装せず分解しました。**\n\n' "${result:-}"
+    [[ -n $summary ]] && printf '%s\n\n' "$summary"
+    [[ -n $reason ]]  && printf '理由: %s\n\n' "$reason"
+    printf '**作成した sub issue**:\n%s\n\n' "$created"
+    printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装されます。\n\n' "$LABEL_QUEUED"
+    printf '推定コスト: $%s\n' "$cost"
+  )"
+
+  local pct_after=""
+  parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
+  record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
+  remove_workspace "$task_dir"
+  log "[$task_id] 分解完了: $(wc -l <<<"$created") 件の sub issue を作成しました"
+  return 0
+}
+
 build_prompt() {
   local kind="$1" number="$2" title="$3" body="$4" comment="$5"
   {
@@ -50,8 +149,10 @@ run_task() {
   local kind="$1" number="$2" title="$3" body="$4" comment="${5:-}"
   local task_id
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
-  local branch="agent/issue-$number"
-  local wt="$AGENT_DIR/worktrees/$task_id"
+  local branch="${BRANCH_PREFIX}${number}"
+  local task_dir="$AGENT_DIR/worktrees/$task_id"
+  local wt="$task_dir/repo"
+  local plan_file="$task_dir/$PLAN_FILE_NAME"
   local log_dir="$AGENT_DIR/logs/$task_id"
   mkdir -p "$log_dir"
 
@@ -59,19 +160,31 @@ run_task() {
   local pct_before="$USAGE_5H"
   [[ -z $pct_before ]] && parse_usage "$(fetch_usage)" && pct_before="$USAGE_5H"
 
+  # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
+  LAST_TASK_OPENED_PR=0
+
   log "[$task_id] 開始: #$number $title"
   set_labels "$number" "$LABEL_RUNNING"
 
-  if ! create_worktree "$branch" "$wt"; then
+  if ! create_workspace "$branch" "$task_dir"; then
     err "[$task_id] worktree の作成に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
     post_comment "$number" "エージェントの作業ツリー作成に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
     return 1
   fi
 
-  local sys_prompt
+  local sys_prompt no_decompose=0
   sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
   [[ $kind == comment ]] && sys_prompt+=$'\n\n'$(cat "$AGENT_DIR/prompts/command.md")
+
+  if is_sub_issue "$number" "$body"; then
+    no_decompose=1
+    sys_prompt+=$'\n\n'"## タスク分解について
+
+この Issue は既に分解されたタスクの一部です。これ以上分解せず、そのまま実装すること。"
+  else
+    sys_prompt+=$'\n\n'"$(sed "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" "$AGENT_DIR/prompts/decompose.md")"
+  fi
 
   local prompt
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "$comment")
@@ -82,7 +195,7 @@ run_task() {
   # 権限ルールは "Bash(npm test:*)" のように空白を含むため配列で受け取る
   (( ${#EXTRA_ALLOWED_TOOLS[@]} )) && \
     extra_json=$(printf '%s\n' "${EXTRA_ALLOWED_TOOLS[@]}" | jq -R . | jq -sc .)
-  jq --arg wt "$wt" --argjson extra "$extra_json" \
+  jq --arg wt "$task_dir" --argjson extra "$extra_json" \
     '.permissions.allow = (
         ["Read(//\($wt)/**)", "Edit(//\($wt)/**)", "Write(//\($wt)/**)"]
         + $extra + .permissions.allow)' \
@@ -95,7 +208,7 @@ run_task() {
 
   local rc=0
   (
-    cd "$wt" || exit 1
+    cd "$task_dir" || exit 1
     # SUBPROCESS_ENV_SCRUB は子プロセスから Anthropic/クラウドの認証情報を剥がす。
     # これを設定すると permission mode は default に強制されるため、権限は
     # settings の allow / deny ルールだけで決まる（--permission-mode は効かない）
@@ -132,8 +245,18 @@ run_task() {
     post_comment "$number" "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
       "$rc" "${result:-}" "${detail:-（stderr なし）}" "$log_dir")"
     record_spend "$task_id" "$cost" "$pct_before" ""
-    log "[$task_id] worktree を調査用に残します: $wt"
+    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
+  fi
+
+  if [[ -f $plan_file ]]; then
+    if (( no_decompose )); then
+      warn "[$task_id] 分解済みタスクなので $PLAN_FILE_NAME を無視します"
+      rm -f "$plan_file"
+    else
+      handle_plan "$task_id" "$number" "$plan_file" "$result" "$cost" "$pct_before" "$task_dir"
+      return $?
+    fi
   fi
 
   if [[ $(git -C "$wt" rev-parse HEAD) == "$head_before" ]]; then
@@ -143,7 +266,7 @@ run_task() {
       post_comment "$number" "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
         "${result:-（応答なし）}" "$wt")"
       record_spend "$task_id" "$cost" "$pct_before" ""
-      log "[$task_id] worktree を調査用に残します: $wt"
+      log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
       return 1
     fi
 
@@ -151,7 +274,7 @@ run_task() {
     set_labels "$number" "$LABEL_DONE"
     post_comment "$number" "${result:-（応答なし）}"
     record_spend "$task_id" "$cost" "$pct_before" ""
-    remove_worktree "$wt"
+    remove_workspace "$task_dir"
     return 0
   fi
 
@@ -185,6 +308,9 @@ run_task() {
     fi
   fi
 
+  # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
+  LAST_TASK_OPENED_PR=1
+
   set_labels "$number" "$LABEL_DONE"
   post_comment "$number" "$(printf '%s\n\n**PR**: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
     "$result" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")"
@@ -192,7 +318,7 @@ run_task() {
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
   record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
-  remove_worktree "$wt"
+  remove_workspace "$task_dir"
   log "[$task_id] 完了: $pr_url (推定 \$$cost, 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
   return 0
 }

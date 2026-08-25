@@ -4,9 +4,9 @@ GitHub の Issue / PR コメントをトリガーに、ローカルの Claude Co
 Anthropic API key を使わず、ログイン済みの `claude` CLI（サブスクリプション認証）でそのまま動く。
 
 ```
-Issue に agent:queued ラベル ─┐
-                              ├─▶ poll.sh ─▶ git worktree ─▶ claude -p ─▶ push ─▶ Draft PR
-コメントに /claude ──────────┘
+Issue に agent:queued ラベル ─┐                              ┌─▶ push ─▶ Draft PR
+                              ├─▶ poll.sh ─▶ worktree ─▶ claude -p ─┤
+コメントに /claude ──────────┘                              └─▶ タスク分解 ─▶ sub issue
 ```
 
 ## セットアップ
@@ -117,8 +117,67 @@ Issue や PR のコメントで、**行頭**に `/claude` と書く。
 | オプション | 説明 |
 |---|---|
 | `--dry-run` | 検出したタスクを表示するだけ |
-| `--task <番号>` | 指定した Issue だけを処理（ラベル不要） |
+| `--task <番号>` | 指定した Issue だけを処理（ラベル不要、同時進行ゲートも無視） |
 | `--ignore-budget` | 利用枠のゲートを無視 |
+
+## タスク分解
+
+大きすぎるタスクを 1 セッションで実装させると、巨大な PR・タイムアウト・予算超過のいずれかに落ちる。
+そこでエージェントは、着手前に**このタスクを分解すべきか**を自分で判断する。
+
+分解すると判断した場合、コード変更を一切行わず sub issue を作って終了する。実装は次回以降のセッションで行う。
+
+```
+16:42:10 [issue-7-...] タスクを分解します (3 件)
+16:42:18 [issue-7-...] 分解完了: 3 件の sub issue を作成しました
+```
+
+判断基準は `prompts/decompose.md` にある。要点は次のとおり。
+
+- **1 つの PR は 1 つの関心事に絞る**。独立してレビュー・revert できる関心事が 2 つ以上あるなら分ける
+- **機能改修とリファクタリングを混ぜない**。リファクタが前提なら先行する別 sub issue に切り出す
+- 整形・リネーム・依存更新のような機械的な差分は、意味のある変更と混ぜない
+- 逆に、本体と不可分なテスト・ドキュメントは切り出さない（単体でレビューできなくなるため）
+- 迷ったら実装を優先する（過剰分解のほうが害が大きい）
+
+### 仕組み
+
+エージェントはサンドボックス内でネットワークを遮断され `gh` も拒否されているため、**自分では sub issue を作れない**。
+分解結果はタスク用ディレクトリ直下（リポジトリの外）の `.gh-agent-plan.json` に書かせ、`lib/run-task.sh` がそれを読んで GitHub API を叩く。
+
+```json
+{
+  "summary": "分解の要約",
+  "reason": "1セッションで完結させない理由",
+  "sub_issues": [
+    { "title": "サブタスク", "body": "## 目的\n...\n## 完了条件\n- [ ] ..." }
+  ]
+}
+```
+
+- 作成される sub issue には `agent:queued` が自動で付く。次回の poll から実装が走る
+- 件数は `MAX_SUB_ISSUES`（既定 5）で頭打ちにする
+- sub issue は REST の sub-issues API で親に紐付く（`sub_issue_id` は Issue の `number` ではなく `id`）
+- 生成した sub issue の本文には `<!-- gh-agent:sub-of #N -->` が入る。**このマーカーか、REST の `parent_issue_url` を持つ Issue は再分解されない**（無限分解のガード）。
+  後者があるので、GitHub 上で手動で親に紐付けた Issue も対象になる
+
+## 同時進行タスクの制限
+
+`MAX_TASKS_PER_RUN`（既定 3）のため、poll.sh は 1 回の実行で複数のタスクを逐次処理する。
+放っておくと Draft PR が何本も並び、どれもレビューされないまま溜まる。
+
+`MAX_OPEN_AGENT_PRS`（既定 1）は、**未マージの `agent/issue-*` PR がある間、新しい Issue への着手を止める**。
+
+```
+16:40:02 進行中の PR: 1 件 (agent/issue-4)
+16:40:02 進行中の PR が 1 件あるためスキップします: #7（マージ/クローズ後に再検出されます）
+```
+
+- スキップされたタスクは `agent:queued` のまま残るので、PR がマージ/クローズされた後の poll で再検出される
+- **進行中 PR の元 Issue への `/claude` コメントは例外**として常に処理される。
+  ここを塞ぐとレビュー指摘を反映できず、「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる
+- `--task` での手動指定もゲートを通さない
+- `0` にすると従来どおり無制限になる
 
 ## 利用枠のゲート
 
@@ -141,7 +200,7 @@ Issue や PR のコメントで、**行頭**に `/claude` と書く。
 
 | 層 | 内容 |
 |---|---|
-| ファイル | `Read`/`Edit`/`Write` は worktree の絶対パス配下のみ許可 |
+| ファイル | `Read`/`Edit`/`Write` はタスク用ディレクトリの絶対パス配下のみ許可 |
 | シェル | Bash は必要なコマンドだけを明示許可。`rm` / `sudo` / `gh` / `curl` は拒否 |
 | ネットワーク | `strictAllowlist` + 空の `allowedDomains` で全遮断 |
 | 認証情報 | `~/.ssh` `~/.config/gh` `~/.claude` を読み取り拒否、`GITHUB_TOKEN` 等を環境から除去 |
@@ -151,12 +210,27 @@ Issue や PR のコメントで、**行頭**に `/claude` と書く。
 `git push` と `gh pr create` は**エージェントにやらせず**、ラッパースクリプトがサンドボックス外で実行する。
 そのため GitHub の認証情報がエージェントに渡ることはない。
 
+### 作業ディレクトリの構成
+
+エージェントの cwd は worktree そのものではなく、その 1 つ上のタスク用ディレクトリにしている。
+
+```
+worktrees/<task-id>/                   ← エージェントの cwd
+worktrees/<task-id>/repo/              ← git worktree（対象リポジトリ）
+worktrees/<task-id>/.gh-agent-plan.json ← タスク分解の受け渡し用
+```
+
+サンドボックスは認証情報の読み取りを塞ぐため、**cwd に `.env` `.env.local` `package.json`
+`yarn.lock` `.npmrc` など 17 個の 0 バイトのファイルを作る**。cwd を worktree にすると
+これが `git status` に出てしまい、「変更なし」で終わったタスクがコミット漏れとして
+失敗扱いになる。1 階層下げることで `git status` の結果をそのまま信用できる。
+
 ### 実装上の注意
 
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` を設定すると **permission mode が default に強制される**。
   権限は `settings/agent-settings.json` の allow / deny ルールだけで決まり、`--permission-mode` は効かない。
 - `Read`/`Edit`/`Write` のパス制限は、`--settings` 経由ではプロジェクト相対 (`Write(/**)`) が効かない。
-  worktree の絶対パスを実行時に注入している（`lib/run-task.sh`）。
+  タスク用ディレクトリの絶対パスを実行時に注入している（`lib/run-task.sh`）。
 - サンドボックスの `autoAllowBashIfSandboxed` は当環境では機能しなかったため、
   Bash は allow ルールで明示的に許可している。プロジェクト固有のコマンドは `EXTRA_ALLOWED_TOOLS` で追加する。
 
@@ -170,6 +244,9 @@ EXTRA_ALLOWED_TOOLS=('Bash(npm test:*)' 'Bash(npm run:*)')
   Issue / PR コメントは第三者が書けるため、発行者を絞らないとプロンプトインジェクション経由の
   任意コード実行に直結する。
 - システムプロンプトで、Issue 本文を「信頼できない入力」として扱うよう指示している（`prompts/issue.md`）。
+- GitHub App 利用時は、**bot 自身（`app/<slug>` と `<slug>[bot]`）が `ALLOWED_ACTORS` に自動で加わる**。
+  タスク分解で作られた sub issue の author は bot になるため、これがないと自動キューが機能しない。
+  bot 名義で Issue を作れるのは秘密鍵の持ち主だけなので、第三者の迂回路にはならない。
 - 対象は自分のリポジトリに限ること。他人のタスクを自分のサブスク枠で代行処理するのは、
   Claude Code の [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) が
   禁じる "resell or intermediate" に該当しうる。
@@ -186,7 +263,9 @@ lib/budget.sh           利用枠ゲート（/usage のパース）
 lib/discover.sh         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
-prompts/                エージェントへの追加システムプロンプト
+prompts/issue.md        エージェントへの追加システムプロンプト
+prompts/command.md      コメントトリガー時に追記される断片
+prompts/decompose.md    タスク分解の判断基準
 settings/               サンドボックスと権限の基本設定
 state/                  処理済みコメント ID、ポーリング時刻、コスト実績
 logs/<task-id>/         stream-json の生ログ、stderr、生成された settings

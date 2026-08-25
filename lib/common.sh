@@ -5,6 +5,17 @@ export AGENT_DIR
 
 # shellcheck disable=SC2034  # discover.sh / run-task.sh で参照
 COMMENT_MARKER='<!-- gh-agent -->'
+# 分解で作られた sub issue の目印。これが本文にある Issue は再分解させない
+# shellcheck disable=SC2034  # run-task.sh で参照
+SUB_ISSUE_MARKER='<!-- gh-agent:sub-of'
+# shellcheck disable=SC2034  # run-task.sh / poll.sh で参照
+BRANCH_PREFIX='agent/issue-'
+# タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd は
+# タスク用ディレクトリなので、リポジトリはこの名前の相対パスで見える。
+# settings/agent-settings.json の "Bash(git -C repo ...)" も同じ名前を指すので、
+# 変えるなら両方を直すこと
+# shellcheck disable=SC2034  # workspace.sh で参照
+REPO_SUBDIR='repo'
 
 log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -34,6 +45,8 @@ load_config() {
   : "${MAX_5H_PERCENT:=50}"
   : "${MAX_7D_PERCENT:=80}"
   : "${MAX_TASKS_PER_RUN:=3}"
+  : "${MAX_SUB_ISSUES:=5}"
+  : "${MAX_OPEN_AGENT_PRS:=1}"
   declare -p EXTRA_ALLOWED_TOOLS >/dev/null 2>&1 || EXTRA_ALLOWED_TOOLS=()
 
   if [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]]; then
