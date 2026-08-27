@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mopu-agent console</title>
+<style>
+:root {
+  --bg: #12141a;
+  --panel: #1a1d25;
+  --panel-2: #21252f;
+  --line: #2c313c;
+  --fg: #e3e6ee;
+  --muted: #8b93a7;
+  --accent: #6ea8fe;
+  --ok: #4ec98a;
+  --warn: #e8c26a;
+  --err: #ef7a7a;
+  --mono: ui-monospace, "JetBrains Mono", "Source Han Code JP", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.6 system-ui, "Noto Sans JP", sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+header h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
+header .repo { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+header .spacer { flex: 1; }
+.pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.pill.running { background: rgba(110,168,254,.15); color: var(--accent); border-color: rgba(110,168,254,.4); }
+.pill.idle    { background: rgba(78,201,138,.13); color: var(--ok); border-color: rgba(78,201,138,.35); }
+.pill.paused  { background: rgba(139,147,167,.14); color: var(--muted); border-color: var(--line); }
+main {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 20px 40px;
+  align-items: start;
+}
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+/* 実在するログのファイル名・ディレクトリ名を出すので、見た目のために字面を変えない */
+#detailTitle {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg);
+}
+dl.kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+dl.kv dt { color: var(--muted); font-size: 12.5px; }
+dl.kv dd { margin: 0; text-align: right; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+.next {
+  font-family: var(--mono);
+  font-size: 26px;
+  text-align: center;
+  padding: 6px 0 10px;
+  color: var(--accent);
+}
+.next small { display: block; font-size: 11px; color: var(--muted); letter-spacing: .1em; font-family: inherit; }
+.row { display: flex; gap: 8px; }
+input[type=text] {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-family: var(--mono);
+}
+input[type=text]:focus { outline: none; border-color: var(--accent); }
+button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: rgba(110,168,254,.14); border-color: rgba(110,168,254,.45); color: var(--accent); }
+.presets { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.presets button { padding: 4px 9px; font-size: 12px; }
+.hint { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
+.msg { margin-top: 8px; font-size: 12.5px; min-height: 1.2em; }
+.msg.err { color: var(--err); }
+.msg.ok { color: var(--ok); }
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tabs button.active { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+.list { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 13px;
+}
+.item:last-child { border-bottom: none; }
+.item:hover { background: var(--panel-2); }
+.item.selected { background: rgba(110,168,254,.1); }
+.item .when { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.item .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.badge.ok { color: var(--ok); border-color: rgba(78,201,138,.4); }
+.badge.err { color: var(--err); border-color: rgba(239,122,122,.4); }
+.badge.run { color: var(--accent); border-color: rgba(110,168,254,.45); }
+pre.log {
+  margin: 0;
+  padding: 12px 14px;
+  background: #0d0f14;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-height: 52vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+pre.log .warn { color: var(--warn); }
+pre.log .error { color: var(--err); }
+.event {
+  border-left: 3px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 0 6px 6px 0;
+  padding: 7px 12px 9px;
+  margin-bottom: 10px;
+}
+.event .head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.event .head .spacer { flex: 1; }
+.event .head button {
+  padding: 3px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.event .body { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; font-family: var(--mono); }
+.event.assistant { border-left-color: var(--accent); }
+.event.result { border-left-color: var(--ok); }
+.event.err { border-left-color: var(--err); }
+.event.system, .event.user { opacity: .75; }
+.empty { color: var(--muted); padding: 16px; text-align: center; font-size: 13px; }
+dl.fields { margin: 2px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; }
+dl.fields dt { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+dl.fields dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.detail-actions { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
+.detail-actions .hint { margin: 0 auto 0 0; }
+.detail-actions button { padding: 4px 10px; font-size: 12px; }
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+.modal[hidden] { display: none; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .6); }
+.modal-box {
+  position: relative;
+  width: min(1100px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.modal-head .spacer { flex: 1; }
+.modal-box pre.log { max-height: none; flex: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mopu-agent console</h1>
+  <span class="repo" id="repo">—</span>
+  <span class="spacer"></span>
+  <span class="pill paused" id="statePill">接続中…</span>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>稼働状態</h2>
+      <div class="next"><span id="countdown">—</span><small id="countdownLabel">次回ポーリングまで</small></div>
+      <dl class="kv">
+        <dt>実行間隔</dt><dd id="kvInterval">—</dd>
+        <dt>最終ポーリング</dt><dd id="kvLastPoll">—</dd>
+        <dt>poll.lock</dt><dd id="kvLock">—</dd>
+        <dt>累計コスト</dt><dd id="kvCost">—</dd>
+        <dt>直近の 5h 枠</dt><dd id="kvPct">—</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>スケジュール</h2>
+      <div class="row">
+        <input type="text" id="intervalInput" placeholder="5m / 300 / 1h" autocomplete="off">
+        <button class="primary" id="applyInterval">適用</button>
+      </div>
+      <div class="presets" id="presets"></div>
+      <div class="row" style="margin-top:12px">
+        <button id="toggleBtn" style="flex:1">—</button>
+        <button id="runNowBtn" style="flex:1">今すぐ実行</button>
+      </div>
+      <div class="msg" id="msg"></div>
+      <div class="hint">最短 60 秒。間隔は state/console.json に保存され、再起動後も引き継がれる。</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="tabs">
+        <button data-tab="runs" class="active">ポーリング履歴</button>
+        <button data-tab="tasks">タスクログ</button>
+      </div>
+      <div class="list" id="list"><div class="empty">読み込み中…</div></div>
+    </div>
+    <div class="card">
+      <h2 id="detailTitle">ログ</h2>
+      <div id="detail"><div class="empty">上の一覧から選択してください</div></div>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-box">
+    <div class="modal-head"><span id="modalTitle"></span><span class="spacer"></span><button data-close>閉じる</button></div>
+    <pre class="log" id="modalBody"></pre>
+  </div>
+</div>
+
+<script>
+const PRESETS = [['1分','1m'],['5分','5m'],['15分','15m'],['30分','30m'],['1時間','1h']];
+const $ = (id) => document.getElementById(id);
+let status = null, offset = 0, tab = 'runs', selected = null, tasks = [], intervalDirty = false;
+let listSig = null;
+
+function paintList(sig, html, bind) {
+  if (sig === listSig) return;
+  listSig = sig;
+  $('list').innerHTML = html;
+  bind();
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+function fmtInterval(sec) {
+  if (sec % 3600 === 0) return (sec / 3600) + 'h';
+  if (sec % 60 === 0) return (sec / 60) + 'm';
+  return sec + 's';
+}
+function fmtTime(epoch) {
+  if (!epoch) return '—';
+  const d = new Date(epoch * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+function serverNow() { return Date.now() / 1000 + offset; }
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+function note(text, cls) {
+  const el = $('msg');
+  el.textContent = text;
+  el.className = 'msg ' + (cls || '');
+  if (text) setTimeout(() => { if (el.textContent === text) { el.textContent = ''; } }, 4000);
+}
+
+async function refresh() {
+  try {
+    status = await api('/api/status');
+  } catch (e) {
+    $('statePill').textContent = '接続できません';
+    $('statePill').className = 'pill paused';
+    return;
+  }
+  offset = status.now - Date.now() / 1000;
+  render();
+  if (tab === 'runs') renderRuns(); else await loadTasks();
+  if (selected && selected.kind === 'run' && isCurrent(selected.id)) openRun(selected.id, true);
+}
+
+function isCurrent(name) {
+  const cur = status && status.scheduler.current;
+  return !!(cur && cur.log === name);
+}
+
+function render() {
+  const sc = status.scheduler, sp = status.spend;
+  $('repo').textContent = status.repo || '';
+  const pill = $('statePill');
+  if (sc.current) { pill.textContent = '実行中'; pill.className = 'pill running'; }
+  else if (sc.enabled) { pill.textContent = '待機中'; pill.className = 'pill idle'; }
+  else { pill.textContent = '停止中'; pill.className = 'pill paused'; }
+
+  $('kvInterval').textContent = fmtInterval(sc.interval_seconds);
+  $('kvLastPoll').textContent = status.poll.last_poll_at || '—';
+  $('kvLock').textContent = status.poll.lock_held ? '保持中' : '空き';
+  $('kvCost').textContent = `$${(sp.total_usd || 0).toFixed(4)} / ${sp.tasks} タスク`;
+  $('kvPct').textContent = sp.pct_5h != null ? sp.pct_5h + '%' : '—';
+
+  $('toggleBtn').textContent = sc.enabled ? '一時停止' : '再開';
+  $('runNowBtn').disabled = !!sc.current;
+  if (!intervalDirty && document.activeElement !== $('intervalInput')) {
+    $('intervalInput').value = fmtInterval(sc.interval_seconds);
+  }
+  tick();
+}
+
+function tick() {
+  if (!status) return;
+  const sc = status.scheduler;
+  if (sc.current) {
+    $('countdown').textContent = fmtDuration(serverNow() - sc.current.started_at);
+    $('countdownLabel').textContent = 'poll.sh 実行中';
+  } else if (sc.enabled && sc.next_run_at) {
+    $('countdown').textContent = fmtDuration(sc.next_run_at - serverNow());
+    $('countdownLabel').textContent = '次回ポーリングまで';
+  } else {
+    $('countdown').textContent = '停止中';
+    $('countdownLabel').textContent = 'スケジューラ';
+  }
+}
+
+function runBadge(run) {
+  if (run.exit_code === 0) {
+    if (run.processed) return `<span class="badge ok">${run.processed} 件処理</span>`;
+    return '<span class="badge ok">タスクなし</span>';
+  }
+  return `<span class="badge err">exit ${run.exit_code}</span>`;
+}
+
+function renderRuns() {
+  const sc = status.scheduler;
+  const rows = [];
+  if (sc.current) {
+    rows.push({ id: sc.current.log, when: sc.current.started_at, html: '<span class="badge run">実行中</span>', label: sc.current.trigger === 'manual' ? '手動実行' : '定期実行' });
+  }
+  for (const run of sc.runs) {
+    rows.push({ id: run.log, when: run.started_at, html: runBadge(run) + `<span class="badge">${run.duration_s}s</span>`, label: run.trigger === 'manual' ? '手動実行' : '定期実行' });
+  }
+  if (!rows.length) {
+    paintList('runs:empty', '<div class="empty">まだ実行されていません</div>', () => {});
+    return;
+  }
+  const html = rows.map((r) => `
+    <div class="item ${selected && selected.kind === 'run' && selected.id === r.id ? 'selected' : ''}" data-run="${esc(r.id)}">
+      <span class="when">${fmtTime(r.when)}</span>
+      <span class="title">${r.label}</span>${r.html}
+    </div>`).join('');
+  paintList('runs:' + html, html, () => {
+    $('list').querySelectorAll('[data-run]').forEach((el) => {
+      el.onclick = () => openRun(el.dataset.run);
+    });
+  });
+}
+
+async function loadTasks() {
+  try {
+    tasks = (await api('/api/tasks')).tasks;
+  } catch (e) { return; }
+  if (!tasks.length) {
+    paintList('tasks:empty', '<div class="empty">タスクログはありません</div>', () => {});
+    return;
+  }
+  const html = tasks.map((t) => {
+    const cls = t.state === 'success' ? 'ok' : t.state === 'error' ? 'err' : '';
+    const label = t.state === 'success' ? '成功' : t.state === 'error' ? '失敗' : '未完了';
+    const cost = t.cost_usd != null ? `<span class="badge">$${t.cost_usd.toFixed(4)}</span>` : '';
+    return `<div class="item ${selected && selected.kind === 'task' && selected.id === t.id ? 'selected' : ''}" data-task="${esc(t.id)}">
+      <span class="when">${fmtTime(t.started_at)}</span>
+      <span class="title">${esc(t.kind || '?')} #${esc(t.number ?? '?')}</span>
+      ${cost}<span class="badge ${cls}">${label}</span>
+    </div>`;
+  }).join('');
+  paintList('tasks:' + html, html, () => {
+    $('list').querySelectorAll('[data-task]').forEach((el) => {
+      el.onclick = () => openTask(el.dataset.task);
+    });
+  });
+}
+
+async function openRun(name, keepScroll) {
+  selected = { kind: 'run', id: name };
+  const pane = $('detail');
+  const prev = pane.querySelector('pre.log');
+  const atBottom = prev ? prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 24 : true;
+  const scroll = prev ? prev.scrollTop : 0;
+  let data;
+  try { data = await api('/api/runs/' + encodeURIComponent(name)); }
+  catch (e) { pane.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  $('detailTitle').textContent = name + (isCurrent(name) ? '（実行中）' : '');
+  const body = data.lines.map((l) => `<span class="${l.level}">${esc(l.text)}</span>`).join('\n');
+  pane.innerHTML = `<pre class="log">${body || '(出力なし)'}</pre>`;
+  const el = pane.querySelector('pre.log');
+  el.scrollTop = keepScroll && !atBottom ? scroll : el.scrollHeight;
+  if (!keepScroll) renderRuns();
+}
+
+async function openTask(id) {
+  selected = { kind: 'task', id };
+  const pane = $('detail');
+  let data;
+  try { data = await api('/api/tasks/' + encodeURIComponent(id)); }
+  catch (e) { pane.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const s = data.summary;
+  $('detailTitle').textContent = id;
+  const meta = [
+    s.state, s.turns != null ? s.turns + ' turns' : null,
+    s.duration_ms != null ? Math.round(s.duration_ms / 1000) + 's' : null,
+    s.cost_usd != null ? '$' + s.cost_usd.toFixed(4) : null,
+  ].filter(Boolean).join(' · ');
+  const events = data.events.map(renderEvent).join('');
+  pane.innerHTML = `<div class="detail-actions">
+      <span class="hint">${esc(meta)}</span>
+      <button data-raw="stream">生ログ (stream.jsonl)</button>
+      <button data-raw="stderr" ${data.stderr.trim() ? '' : 'disabled'}>stderr</button>
+    </div>
+    ${events || '<div class="empty">イベントがありません</div>'}`;
+  pane.querySelectorAll('[data-raw]').forEach((el) => {
+    el.onclick = () => showRaw(id, el.dataset.raw);
+  });
+  pane.querySelectorAll('[data-line]').forEach((el) => {
+    el.onclick = () => showRawLine(id, el.dataset.line);
+  });
+  await loadTasks();
+}
+
+function eventHead(e) {
+  if (e.role === 'assistant') return e.kind === 'tool_use' ? `エージェント · ${e.name}` : 'エージェント';
+  if (e.role === 'user') return e.is_error ? 'ツール結果（エラー）' : 'ツール結果';
+  if (e.role === 'result') return `結果 · ${e.kind}`;
+  return `システム · ${e.kind}`;
+}
+
+function renderEvent(e) {
+  const cls = e.is_error ? 'err' : e.role;
+  const body = e.fields && e.fields.length
+    ? `<dl class="fields">${e.fields.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`
+    : `<div class="body">${esc(e.text)}</div>`;
+  return `<div class="event ${cls}">
+    <div class="head">${esc(eventHead(e))}<span class="spacer"></span>
+      <button data-line="${e.line}" title="stream.jsonl の ${e.line} 行目">raw</button>
+    </div>${body}</div>`;
+}
+
+async function showRawLine(id, line) {
+  let data;
+  try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw?line=${encodeURIComponent(line)}`); }
+  catch (e) { note(e.message, 'err'); return; }
+  let text = data.text;
+  try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { /* 壊れた行はそのまま出す */ }
+  openModal(`${id}/stream.jsonl:${data.line}`, text);
+}
+
+async function showRaw(id, which) {
+  let data;
+  try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw`); }
+  catch (e) { note(e.message, 'err'); return; }
+  const file = which === 'stderr' ? 'stderr.log' : 'stream.jsonl';
+  openModal(`${id}/${file}`, data[which] || '(空)');
+}
+
+function openModal(title, text) {
+  $('modalTitle').textContent = title;
+  $('modalBody').textContent = text;
+  $('modal').hidden = false;
+  $('modalBody').scrollTop = 0;
+}
+function closeModal() { $('modal').hidden = true; }
+document.querySelectorAll('[data-close]').forEach((el) => { el.onclick = closeModal; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+$('presets').innerHTML = PRESETS.map(([label, v]) => `<button data-v="${v}">${label}</button>`).join('');
+$('presets').querySelectorAll('button').forEach((b) => {
+  b.onclick = () => { $('intervalInput').value = b.dataset.v; intervalDirty = false; applyInterval(); };
+});
+async function applyInterval() {
+  try {
+    status = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval: $('intervalInput').value.trim() }),
+    });
+    intervalDirty = false;
+    offset = status.now - Date.now() / 1000;
+    render();
+    note(`実行間隔を ${fmtInterval(status.scheduler.interval_seconds)} にしました`, 'ok');
+  } catch (e) { note(e.message, 'err'); }
+}
+$('applyInterval').onclick = applyInterval;
+$('intervalInput').oninput = () => { intervalDirty = true; };
+$('intervalInput').onkeydown = (e) => { if (e.key === 'Enter') applyInterval(); };
+
+$('toggleBtn').onclick = async () => {
+  try {
+    status = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !status.scheduler.enabled }),
+    });
+    render();
+    note(status.scheduler.enabled ? 'スケジューラを再開しました' : 'スケジューラを停止しました', 'ok');
+  } catch (e) { note(e.message, 'err'); }
+};
+
+$('runNowBtn').onclick = async () => {
+  try {
+    status = await api('/api/run', { method: 'POST' });
+    render(); renderRuns();
+    note('ポーリングを開始しました', 'ok');
+  } catch (e) { note(e.message, 'err'); }
+};
+
+document.querySelectorAll('.tabs button').forEach((b) => {
+  b.onclick = () => {
+    tab = b.dataset.tab;
+    document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    listSig = null;
+    $('list').innerHTML = '<div class="empty">読み込み中…</div>';
+    if (tab === 'runs') renderRuns(); else loadTasks();
+  };
+});
+
+refresh();
+setInterval(refresh, 2000);
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

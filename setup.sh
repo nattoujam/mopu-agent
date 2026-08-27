@@ -39,4 +39,10 @@ for t in bwrap socat rg; do
   fi
 done
 
+if command -v python3 >/dev/null 2>&1; then
+  log "  ✓ python3 (Web コンソール)"
+else
+  warn "  ✗ python3 が見つかりません。Web コンソールを使うなら sudo pacman -S python でインストールしてください"
+fi
+
 log "セットアップ完了。./poll.sh --dry-run で動作を確認してください"
