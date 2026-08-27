@@ -195,10 +195,19 @@ run_task() {
   # 権限ルールは "Bash(npm test:*)" のように空白を含むため配列で受け取る
   (( ${#EXTRA_ALLOWED_TOOLS[@]} )) && \
     extra_json=$(printf '%s\n' "${EXTRA_ALLOWED_TOOLS[@]}" | jq -R . | jq -sc .)
-  jq --arg wt "$task_dir" --argjson extra "$extra_json" \
+  # sandbox を切っているので、エージェント自身の設定・認証情報を守るのは
+  # この deny ルールだけになる
+  local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state")
+  use_github_app && secret_paths+=("$APP_PRIVATE_KEY")
+  local deny_json
+  deny_json=$(printf '%s\n' "${secret_paths[@]}" \
+    | jq -R 'sub("^/";"") | "Read(//\(.))", "Read(//\(.)/**)"' | jq -sc .)
+
+  jq --arg wt "$task_dir" --argjson extra "$extra_json" --argjson deny "$deny_json" \
     '.permissions.allow = (
         ["Read(//\($wt)/**)", "Edit(//\($wt)/**)", "Write(//\($wt)/**)"]
-        + $extra + .permissions.allow)' \
+        + $extra + .permissions.allow)
+     | .permissions.deny = ($deny + .permissions.deny)' \
     "$AGENT_DIR/settings/agent-settings.json" > "$settings" || return 1
 
   # 既存ブランチを引き継いだ場合、既にあるコミットを「今回の成果」と誤認しないよう
@@ -209,10 +218,11 @@ run_task() {
   local rc=0
   (
     cd "$task_dir" || exit 1
-    # SUBPROCESS_ENV_SCRUB は子プロセスから Anthropic/クラウドの認証情報を剥がす。
-    # これを設定すると permission mode は default に強制されるため、権限は
-    # settings の allow / deny ルールだけで決まる（--permission-mode は効かない）
-    CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
+    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB は使わない。これを立てると sandbox の
+    # filesystem isolation が強制的に維持され、sandbox.enabled=false でも
+    # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
+    # 子プロセスへ渡したくない認証情報は代わりにここで落とす
+    unset GH_TOKEN GITHUB_TOKEN
     timeout "$TASK_TIMEOUT" claude -p "$prompt" \
       --settings "$settings" \
       --setting-sources '' \

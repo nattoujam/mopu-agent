@@ -41,10 +41,10 @@
       "Bash(touch:*)"
     ],
     "deny": [
-      "Read(//home/nattou/.ssh/**)",
-      "Read(//home/nattou/.claude/**)",
-      "Read(//home/nattou/.config/**)",
-      "Read(//home/nattou/.aws/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/**)",
+      "Read(~/.claude/**)",
       "Bash(git push:*)",
       "Bash(git remote:*)",
       "Bash(git config:*)",
@@ -59,7 +59,7 @@
     ]
   },
   "sandbox": {
-    "enabled": true,
+    "enabled": false,
     "autoAllowBashIfSandboxed": true,
     "network": {
       "allowedDomains": [],
