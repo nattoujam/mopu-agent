@@ -4,7 +4,7 @@ GitHub の Issue / PR コメントをトリガーに、ローカルの Claude Co
 Anthropic API key を使わず、ログイン済みの `claude` CLI（サブスクリプション認証）でそのまま動く。
 
 ```
-Issue に agent:queued ラベル ─┐                              ┌─▶ push ─▶ Draft PR
+Issue に agent:queued ラベル ─┐                              ┌─▶ push ─▶ PR
                               ├─▶ poll.sh ─▶ worktree ─▶ claude -p ─┤
 コメントに /claude ──────────┘                              └─▶ タスク分解 ─▶ sub issue
 ```
@@ -43,7 +43,7 @@ Repository permissions は次の 4 つだけ与える。
 |---|---|---|
 | Contents | Read and write | ブランチの push |
 | Issues | Read and write | コメント投稿、ラベル操作 |
-| Pull requests | Read and write | Draft PR の作成 |
+| Pull requests | Read and write | PR の作成、レビュアーの指定 |
 | Metadata | Read-only | 必須（自動で付く） |
 
 "Where can this GitHub App be installed?" は **Only on this account** でよい。
@@ -120,6 +120,20 @@ Issue や PR のコメントで、**行頭**に `/claude` と書く。
 | `--task <番号>` | 指定した Issue だけを処理（ラベル不要、同時進行ゲートも無視） |
 | `--ignore-budget` | 利用枠のゲートを無視 |
 
+### 作成される PR
+
+| 項目 | 値 |
+|---|---|
+| 状態 | Open（Draft にしない） |
+| Reviewers | `REPO` の owner |
+| Assignees | 付けない |
+
+Assignees を付けないのは、**GitHub App の bot ユーザーが assignable ではない**ため。
+`GET /repos/{owner}/{repo}/assignees/<app-slug>[bot]` は 404 を返す（人間のアカウントは 204）。
+
+Reviewers の指定に失敗した場合は警告を出すだけで、PR 自体は成立させる。
+GitHub は PR の author を reviewer にできないため、App を使わず owner 名義で動かす構成では必ず失敗する。
+
 ## タスク分解
 
 大きすぎるタスクを 1 セッションで実装させると、巨大な PR・タイムアウト・予算超過のいずれかに落ちる。
@@ -164,7 +178,7 @@ Issue や PR のコメントで、**行頭**に `/claude` と書く。
 ## 同時進行タスクの制限
 
 `MAX_TASKS_PER_RUN`（既定 3）のため、poll.sh は 1 回の実行で複数のタスクを逐次処理する。
-放っておくと Draft PR が何本も並び、どれもレビューされないまま溜まる。
+放っておくと PR が何本も並び、どれもレビューされないまま溜まる。
 
 `MAX_OPEN_AGENT_PRS`（既定 1）は、**未マージの `agent/issue-*` PR がある間、新しい Issue への着手を止める**。
 

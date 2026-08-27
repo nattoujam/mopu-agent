@@ -20,6 +20,15 @@ set_labels() {
   done
 }
 
+# レビュアーの指定に失敗しても PR 自体は成立させる。GitHub は PR の author を
+# reviewer にできないため、App を使わず owner 名義で動かす構成では必ず失敗する
+request_review() {
+  local task_id="$1" branch="$2" reviewer="${REPO%%/*}" out
+  if ! out=$(gh pr edit "$branch" -R "$REPO" --add-reviewer "$reviewer" 2>&1); then
+    warn "[$task_id] レビュアー '$reviewer' を指定できませんでした: $out"
+  fi
+}
+
 PLAN_FILE_NAME='.gh-agent-plan.json'
 
 # 分解で生まれた Issue を再分解させないための判定。本文のマーカーは自分で
@@ -379,12 +388,13 @@ run_task() {
   local pr_url pr_out
   pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
   if [[ -z $pr_url ]]; then
-    if pr_out=$(gh pr create -R "$REPO" --draft \
+    if pr_out=$(gh pr create -R "$REPO" \
       --base "$BASE_BRANCH" --head "$branch" \
       --title "$title" \
       --body "$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")" 2>&1)
     then
       pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
+      request_review "$task_id" "$branch"
     else
       err "[$task_id] PR の作成に失敗しました: $pr_out"
       set_labels "$number" "$LABEL_FAILED"
