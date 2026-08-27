@@ -22,6 +22,9 @@ warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 err()  { printf '%s \033[31m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# Issue コメントは公開されるため、サーバーのユーザー名を含む絶対パスは載せない
+agent_relpath() { printf '%s' "${1#"$AGENT_DIR"/}"; }
+
 load_config() {
   local cfg="$AGENT_DIR/config.env"
   [[ -f $cfg ]] || die "config.env がありません。config.env.example をコピーして設定してください"

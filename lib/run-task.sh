@@ -95,7 +95,7 @@ handle_plan() {
   if [[ -z $created ]]; then
     err "[$task_id] sub issue を 1 件も作成できませんでした"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$AGENT_DIR/logs/$task_id\`"
+    post_comment "$number" "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$(agent_relpath "$AGENT_DIR/logs/$task_id")\`"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
@@ -243,7 +243,7 @@ run_task() {
     detail=$(tail -20 "$log_dir/stderr.log")
     set_labels "$number" "$LABEL_FAILED"
     post_comment "$number" "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
-      "$rc" "${result:-}" "${detail:-（stderr なし）}" "$log_dir")"
+      "$rc" "${result:-}" "${detail:-（stderr なし）}" "$(agent_relpath "$log_dir")")"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
@@ -264,7 +264,7 @@ run_task() {
       err "[$task_id] コミットされていない変更が残っています"
       set_labels "$number" "$LABEL_FAILED"
       post_comment "$number" "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
-        "${result:-（応答なし）}" "$wt")"
+        "${result:-（応答なし）}" "$(agent_relpath "$wt")")"
       record_spend "$task_id" "$cost" "$pct_before" ""
       log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
       return 1
@@ -284,7 +284,7 @@ run_task() {
   if ! "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease; then
     err "[$task_id] push に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "作業は完了しましたが push に失敗しました。worktree: \`$wt\`"
+    post_comment "$number" "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
     record_spend "$task_id" "$cost" "$pct_before" ""
     return 1
   fi
