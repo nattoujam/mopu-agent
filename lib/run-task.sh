@@ -189,8 +189,9 @@ run_task() {
   local prompt
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "$comment")
 
-  # Read/Edit/Write のパス制限は worktree の絶対パスでしか正しく効かないため、
-  # 実行のたびに設定を生成する（"//" が絶対パスのプレフィックス）
+  # Read/Edit のパス制限は worktree の絶対パスでしか正しく効かないため、
+  # 実行のたびに設定を生成する（"//" が絶対パスのプレフィックス）。
+  # Write ルールは Claude Code が参照しない（書き込み系は Edit がカバーする）
   local settings="$log_dir/settings.json" extra_json='[]'
   # 権限ルールは "Bash(npm test:*)" のように空白を含むため配列で受け取る
   (( ${#EXTRA_ALLOWED_TOOLS[@]} )) && \
@@ -205,7 +206,7 @@ run_task() {
 
   jq --arg wt "$task_dir" --argjson extra "$extra_json" --argjson deny "$deny_json" \
     '.permissions.allow = (
-        ["Read(//\($wt)/**)", "Edit(//\($wt)/**)", "Write(//\($wt)/**)"]
+        ["Read(//\($wt)/**)", "Edit(//\($wt)/**)"]
         + $extra + .permissions.allow)
      | .permissions.deny = ($deny + .permissions.deny)' \
     "$AGENT_DIR/settings/agent-settings.json" > "$settings" || return 1
