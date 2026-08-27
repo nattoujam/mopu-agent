@@ -7,6 +7,8 @@ source "$AGENT_DIR/lib/common.sh"
 DRY_RUN=0
 IGNORE_BUDGET=0
 ONLY_TASK=""
+# shellcheck disable=SC2034  # run-task.sh が参照
+RETRY=0
 
 usage() {
   cat <<'EOF'
@@ -15,6 +17,7 @@ usage() {
   --dry-run           検出したタスクを表示するだけで実行しない
   --ignore-budget     利用枠のゲートを無視して実行する
   --task <番号>       指定した Issue 番号だけを処理する（ラベル不要）
+  --retry <番号>      前回失敗したタスクの作業ツリーを引き継いで再開する
   -h, --help          このヘルプ
 EOF
 }
@@ -24,6 +27,7 @@ while (( $# )); do
     --dry-run)       DRY_RUN=1 ;;
     --ignore-budget) IGNORE_BUDGET=1 ;;
     --task)          ONLY_TASK="${2:?--task には Issue 番号が必要です}"; shift ;;
+    --retry)         ONLY_TASK="${2:?--retry には Issue 番号が必要です}"; RETRY=1; shift ;;
     -h|--help)       usage; exit 0 ;;
     *)               die "不明なオプション: $1" ;;
   esac

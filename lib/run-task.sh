@@ -119,6 +119,44 @@ handle_plan() {
   return 0
 }
 
+# .result は複数行なので、行単位の tail では最終行しか取れない。
+# 最後の result イベントを取り出してから中身を読む
+last_result() {
+  jq -rs 'map(select(.type=="result")) | last | .result // empty' "$1" 2>/dev/null
+}
+
+# 失敗したタスクが残していった作業ディレクトリのうち、その Issue の最新のもの
+find_leftover_task() {
+  local number="$1"
+  find "$AGENT_DIR/worktrees" -mindepth 1 -maxdepth 1 -type d \
+    \( -name "issue-${number}-*" -o -name "comment-${number}-*" \) 2>/dev/null \
+    | sort | tail -1
+}
+
+# --retry で渡す前回の失敗の情報。何が起きて、何がやりかけで残っているか
+build_retry_context() {
+  local prev_log="$1" wt="$2" result stderr changes
+  [[ -f $prev_log/stream.jsonl ]] && result=$(last_result "$prev_log/stream.jsonl")
+  [[ -s $prev_log/stderr.log ]] && stderr=$(tail -20 "$prev_log/stderr.log")
+  changes=$(git -C "$wt" status --porcelain)
+  {
+    echo "## 前回の実行について"
+    echo
+    echo "このタスクの前回の実行は失敗し、その作業ツリーをそのまま引き継いでいます。"
+    echo "やりかけの変更が残っているので、最初からやり直さず続きから進めてください。"
+    # 報告自体が markdown（コードフェンス入り）なので、囲まずにそのまま置く
+    if [[ -n ${result:-} ]]; then
+      echo; echo "### 前回の報告"; echo; printf '%s\n' "$result"
+    fi
+    if [[ -n ${stderr:-} ]]; then
+      echo; echo "### 前回の stderr"; echo; echo '```'; printf '%s\n' "$stderr"; echo '```'
+    fi
+    echo; echo "### 引き継いだ未コミットの変更"; echo; echo '```'
+    printf '%s\n' "${changes:-（なし）}"
+    echo '```'
+  } | head -c 20000
+}
+
 build_prompt() {
   local kind="$1" number="$2" title="$3" body="$4" comment="$5"
   {
@@ -151,6 +189,19 @@ run_task() {
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
   local branch="${BRANCH_PREFIX}${number}"
   local task_dir="$AGENT_DIR/worktrees/$task_id"
+
+  # --retry では新しい worktree を作らず、前回の失敗が残したものを使う
+  local prev_dir="" prev_log=""
+  if (( ${RETRY:-0} )); then
+    prev_dir=$(find_leftover_task "$number")
+    if [[ -n $prev_dir ]]; then
+      task_dir="$prev_dir"
+      prev_log="$AGENT_DIR/logs/${prev_dir##*/}"
+    else
+      warn "[$task_id] 引き継げる作業ツリーがないため、通常どおり新規に作成します"
+    fi
+  fi
+
   local wt="$task_dir/repo"
   local plan_file="$task_dir/$PLAN_FILE_NAME"
   local log_dir="$AGENT_DIR/logs/$task_id"
@@ -166,10 +217,17 @@ run_task() {
   log "[$task_id] 開始: #$number $title"
   set_labels "$number" "$LABEL_RUNNING"
 
-  if ! create_workspace "$branch" "$task_dir"; then
-    err "[$task_id] worktree の作成に失敗しました"
+  local ok=0
+  if [[ -n $prev_dir ]]; then
+    log "[$task_id] 前回の作業ツリーを引き継ぎます: $(agent_relpath "$prev_dir")"
+    resume_workspace "$branch" "$task_dir" && ok=1
+  else
+    create_workspace "$branch" "$task_dir" && ok=1
+  fi
+  if (( ! ok )); then
+    err "[$task_id] worktree の準備に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "エージェントの作業ツリー作成に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
+    post_comment "$number" "エージェントの作業ツリー準備に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
     return 1
   fi
 
@@ -177,7 +235,13 @@ run_task() {
   sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
   [[ $kind == comment ]] && sys_prompt+=$'\n\n'$(cat "$AGENT_DIR/prompts/command.md")
 
-  if is_sub_issue "$number" "$body"; then
+  # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
+  if [[ -n $prev_dir ]]; then
+    no_decompose=1
+    sys_prompt+=$'\n\n'"## タスク分解について
+
+これは中断したタスクの再開です。分解せず、残っている作業を仕上げること。"
+  elif is_sub_issue "$number" "$body"; then
     no_decompose=1
     sys_prompt+=$'\n\n'"## タスク分解について
 
@@ -188,6 +252,7 @@ run_task() {
 
   local prompt
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "$comment")
+  [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
 
   # Read/Edit のパス制限は worktree の絶対パスでしか正しく効かないため、
   # 実行のたびに設定を生成する（"//" が絶対パスのプレフィックス）。
@@ -215,6 +280,16 @@ run_task() {
   # 実行前の HEAD を控えておく
   local head_before
   head_before=$(git -C "$wt" rev-parse HEAD)
+  # --retry で引き継いだコミットは push されていないので、今回の成果に含める。
+  # ここを実行前の HEAD にすると、前回コミットまで進んでいたタスクが
+  # 「コード変更なし」と判定されて push も PR 作成もされない
+  if [[ -n $prev_dir ]]; then
+    if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      head_before=$(git -C "$wt" rev-parse "origin/$branch")
+    else
+      head_before=$(git -C "$wt" merge-base HEAD "origin/$BASE_BRANCH")
+    fi
+  fi
 
   local rc=0
   (
@@ -235,7 +310,7 @@ run_task() {
   ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log" || rc=$?
 
   local result is_error cost
-  result=$(jq -r 'select(.type=="result") | .result // empty' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  result=$(last_result "$log_dir/stream.jsonl")
   is_error=$(jq -r 'select(.type=="result") | .is_error' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
   cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
 

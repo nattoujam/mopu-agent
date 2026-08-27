@@ -33,6 +33,25 @@ release_branch() {
   git -C "$REPO_DIR" worktree prune
 }
 
+# 使い方: workspace_identity <worktree>
+# サンドボックス内では HOME が差し替わり ~/.gitconfig を読めないため、
+# コミット時の identity を worktree のローカル設定として持たせる
+workspace_identity() {
+  git -C "$1" config user.name  "${GIT_AUTHOR_NAME:-gh-agent}"
+  git -C "$1" config user.email "${GIT_AUTHOR_EMAIL:-gh-agent@localhost}"
+}
+
+# --retry 用。残っている worktree を作り直さずにそのまま使う。未コミットの
+# 変更も untracked ファイルも失わずに続きから作業させるのが目的。
+# release_branch で切り離されているので、ブランチを付け直す
+resume_workspace() {
+  local branch="$1" task_dir="$2" wt
+  wt=$(workspace_repo "$task_dir")
+  [[ -e $wt/.git ]] || { err "引き継げる worktree がありません: $wt"; return 1; }
+  git -C "$wt" checkout --quiet -B "$branch" || return 1
+  workspace_identity "$wt"
+}
+
 create_workspace() {
   local branch="$1" task_dir="$2" base="origin/$BASE_BRANCH" wt
   wt=$(workspace_repo "$task_dir")
@@ -45,10 +64,7 @@ create_workspace() {
   fi
   mkdir -p "$task_dir" || return 1
   git -C "$REPO_DIR" worktree add --quiet -B "$branch" "$wt" "$base" || return 1
-  # サンドボックス内では HOME が差し替わり ~/.gitconfig を読めないため、
-  # コミット時の identity を worktree のローカル設定として持たせる
-  git -C "$wt" config user.name  "${GIT_AUTHOR_NAME:-gh-agent}"
-  git -C "$wt" config user.email "${GIT_AUTHOR_EMAIL:-gh-agent@localhost}"
+  workspace_identity "$wt"
 }
 
 remove_workspace() {
