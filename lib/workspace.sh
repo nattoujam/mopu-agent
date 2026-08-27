@@ -14,11 +14,29 @@ ensure_repo() {
 # 0 バイトのファイルを作るので、cwd をリポジトリの外に置いて巻き込まれないようにする
 workspace_repo() { printf '%s/%s' "$1" "$REPO_SUBDIR"; }
 
-# 使用中の worktree が残っていると同名ブランチを再作成できないため、
-# 前回の失敗で残ったものは呼び出し側が明示的に削除する
+# 失敗したタスクの worktree は調査用に残すので、同じ Issue を再実行すると
+# ブランチが使用中で worktree を作れない。残骸からブランチだけ取り上げる。
+# 未コミットの変更がある場合は消さずに HEAD を切り離すだけにする
+release_branch() {
+  local branch="$1" holder
+  holder=$(git -C "$REPO_DIR" worktree list --porcelain \
+    | awk -v b="refs/heads/$branch" '/^worktree /{w=$2} /^branch /{if ($2 == b) print w}')
+  [[ -n $holder ]] || return 0
+
+  if [[ -z $(git -C "$holder" status --porcelain 2>/dev/null) ]]; then
+    log "前回の worktree を片付けます: $holder"
+    remove_workspace "${holder%"/$REPO_SUBDIR"}" || return 1
+  else
+    warn "未コミットの変更が残るため worktree は消さず、ブランチ $branch だけ切り離します: $holder"
+    git -C "$holder" checkout --quiet --detach || return 1
+  fi
+  git -C "$REPO_DIR" worktree prune
+}
+
 create_workspace() {
   local branch="$1" task_dir="$2" base="origin/$BASE_BRANCH" wt
   wt=$(workspace_repo "$task_dir")
+  release_branch "$branch" || return 1
   # 同じ Issue への 2 回目以降の作業では、既存 PR のコミットを捨てないよう
   # リモートブランチがあればそちらをベースにする
   if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
