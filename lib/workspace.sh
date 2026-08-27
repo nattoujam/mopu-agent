@@ -37,8 +37,8 @@ release_branch() {
 # サンドボックス内では HOME が差し替わり ~/.gitconfig を読めないため、
 # コミット時の identity を worktree のローカル設定として持たせる
 workspace_identity() {
-  git -C "$1" config user.name  "${GIT_AUTHOR_NAME:-gh-agent}"
-  git -C "$1" config user.email "${GIT_AUTHOR_EMAIL:-gh-agent@localhost}"
+  git -C "$1" config user.name  "${GIT_AUTHOR_NAME:-mopu-agent}"
+  git -C "$1" config user.email "${GIT_AUTHOR_EMAIL:-mopu-agent@localhost}"
 }
 
 # --retry 用。残っている worktree を作り直さずにそのまま使う。未コミットの

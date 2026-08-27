@@ -1,4 +1,4 @@
-# gh-agent
+# mopu-agent
 
 GitHub の Issue / PR コメントをトリガーに、ローカルの Claude Code へタスクを投げるポーリング型エージェント。
 Anthropic API key を使わず、ログイン済みの `claude` CLI（サブスクリプション認証）でそのまま動く。
@@ -33,7 +33,7 @@ GitHub App を登録すると `<app-slug>[bot]` 名義になり、bot バッジ�
 
 | 項目 | 値 |
 |---|---|
-| GitHub App name | 例 `nattoujam-gh-agent`（グローバルに一意なので `gh-agent` 単体は取れない可能性が高い） |
+| GitHub App name | 例 `nattoujam-mopu-agent`（グローバルに一意なので `mopu-agent` 単体は取れない可能性が高い） |
 | Homepage URL | 何でもよい（`https://github.com/nattoujam` など） |
 | Webhook | **Active のチェックを外す**（ポーリング方式なので不要） |
 
@@ -57,23 +57,23 @@ Repository permissions は次の 4 つだけ与える。
 ### 3. 配置する
 
 ```bash
-mkdir -p ~/.config/gh-agent
-mv ~/Downloads/*.private-key.pem ~/.config/gh-agent/app.pem
-chmod 600 ~/.config/gh-agent/app.pem
+mkdir -p ~/.config/mopu-agent
+mv ~/Downloads/*.private-key.pem ~/.config/mopu-agent/app.pem
+chmod 600 ~/.config/mopu-agent/app.pem
 ```
 
 `config.env` に設定する。
 
 ```bash
 APP_ID='123456'
-APP_PRIVATE_KEY='~/.config/gh-agent/app.pem'
+APP_PRIVATE_KEY='~/.config/mopu-agent/app.pem'
 ```
 
 ### 4. 確認する
 
 ```bash
 ./setup.sh
-# → GitHub App として動作します: nattoujam-gh-agent[bot]
+# → GitHub App として動作します: nattoujam-mopu-agent[bot]
 ```
 
 以降、Issue コメント・PR・コミットのすべてが bot 名義になる。
@@ -157,7 +157,7 @@ GitHub は PR の author を reviewer にできないため、App を使わず o
 ### 仕組み
 
 エージェントはサンドボックス内でネットワークを遮断され `gh` も拒否されているため、**自分では sub issue を作れない**。
-分解結果はタスク用ディレクトリ直下（リポジトリの外）の `.gh-agent-plan.json` に書かせ、`lib/run-task.sh` がそれを読んで GitHub API を叩く。
+分解結果はタスク用ディレクトリ直下（リポジトリの外）の `.mopu-agent-plan.json` に書かせ、`lib/run-task.sh` がそれを読んで GitHub API を叩く。
 
 ```json
 {
@@ -172,7 +172,7 @@ GitHub は PR の author を reviewer にできないため、App を使わず o
 - 作成される sub issue には `agent:queued` が自動で付く。次回の poll から実装が走る
 - 件数は `MAX_SUB_ISSUES`（既定 5）で頭打ちにする
 - sub issue は REST の sub-issues API で親に紐付く（`sub_issue_id` は Issue の `number` ではなく `id`）
-- 生成した sub issue の本文には `<!-- gh-agent:sub-of #N -->` が入る。**このマーカーか、REST の `parent_issue_url` を持つ Issue は再分解されない**（無限分解のガード）。
+- 生成した sub issue の本文には `<!-- mopu-agent:sub-of #N -->` が入る。**このマーカーか、REST の `parent_issue_url` を持つ Issue は再分解されない**（無限分解のガード）。
   後者があるので、GitHub 上で手動で親に紐付けた Issue も対象になる
 
 ## 同時進行タスクの制限
@@ -231,7 +231,7 @@ GitHub は PR の author を reviewer にできないため、App を使わず o
 ```
 worktrees/<task-id>/                   ← エージェントの cwd
 worktrees/<task-id>/repo/              ← git worktree（対象リポジトリ）
-worktrees/<task-id>/.gh-agent-plan.json ← タスク分解の受け渡し用
+worktrees/<task-id>/.mopu-agent-plan.json ← タスク分解の受け渡し用
 ```
 
 サンドボックスは認証情報の読み取りを塞ぐため、**cwd に `.env` `.env.local` `package.json`

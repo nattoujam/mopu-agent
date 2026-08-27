@@ -29,7 +29,7 @@ request_review() {
   fi
 }
 
-PLAN_FILE_NAME='.gh-agent-plan.json'
+PLAN_FILE_NAME='.mopu-agent-plan.json'
 
 # 分解で生まれた Issue を再分解させないための判定。本文のマーカーは自分で
 # 埋めるので確実に効き、parent_issue_url は GitHub 上で手動で紐付けられた

@@ -25,10 +25,10 @@ create_label() {
   fi
 }
 
-create_label "$LABEL_QUEUED"  "1d76db" "gh-agent: 処理待ち"
-create_label "$LABEL_RUNNING" "fbca04" "gh-agent: 実行中"
-create_label "$LABEL_DONE"    "0e8a16" "gh-agent: 完了"
-create_label "$LABEL_FAILED"  "d73a4a" "gh-agent: 失敗"
+create_label "$LABEL_QUEUED"  "1d76db" "mopu-agent: 処理待ち"
+create_label "$LABEL_RUNNING" "fbca04" "mopu-agent: 実行中"
+create_label "$LABEL_DONE"    "0e8a16" "mopu-agent: 完了"
+create_label "$LABEL_FAILED"  "d73a4a" "mopu-agent: 失敗"
 
 log "サンドボックスの依存を確認します"
 for t in bwrap socat rg; do

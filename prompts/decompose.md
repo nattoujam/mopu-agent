@@ -37,10 +37,10 @@
 ### 分解する場合の手順
 
 1. コードの変更と `git commit` を**一切行わない**
-2. 作業ディレクトリの直下（`repo/` の中ではない）に `.gh-agent-plan.json` を Write ツールで作成する
+2. 作業ディレクトリの直下（`repo/` の中ではない）に `.mopu-agent-plan.json` を Write ツールで作成する
 3. 最終メッセージには、なぜ 1 セッションで完結させないのかを人間向けに書く
 
-`.gh-agent-plan.json` の形式:
+`.mopu-agent-plan.json` の形式:
 
 ```json
 {
