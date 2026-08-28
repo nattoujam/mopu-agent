@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
 
 # ラベル付き Issue を JSON Lines で出力する
-# {kind, number, title, body, actor}
+# {kind, number, title, body, actor, deps}
+# 分解されたタスクは先に作られた Issue が後続の前提になるため、番号の昇順で返す。
+# deps は同じ親を持ち、番号が若く、まだ open な sub-issue（＝PR が master に
+# 入っていない前提タスク）で、poll.sh はこれが残るうちは着手を見送る。
+# 子から親を辿れるのは GraphQL だけ（REST の issue.parent は null を返す）。
+# IssueOrderField に NUMBER がないため、並べ替えは jq 側で行う
+# shellcheck disable=SC2016  # $owner / $i は GraphQL と jq の変数
 discover_labeled() {
-  gh issue list -R "$REPO" --label "$LABEL_QUEUED" --state open \
-    --limit 50 --json number,title,body,author \
-    --jq '.[] | {kind:"issue", number, title, body, actor:.author.login}' 2>/dev/null
+  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO##*/}" -f label="$LABEL_QUEUED" -f query='
+    query($owner:String!, $name:String!, $label:String!) {
+      repository(owner:$owner, name:$name) {
+        issues(first:50, states:OPEN, labels:[$label], orderBy:{field:CREATED_AT, direction:ASC}) {
+          nodes {
+            number title body author { login }
+            parent { number subIssues(first:100) { nodes { number state } } }
+          }
+        }
+      }
+    }' \
+    --jq '.data.repository.issues.nodes | sort_by(.number)[] | . as $i
+          | {kind:"issue", number, title, body, actor:.author.login,
+             deps: [(.parent.subIssues.nodes // [])[]
+                    | select(.state == "OPEN" and .number < $i.number) | .number]}' 2>/dev/null
 }
 
 # コメント本文から fenced code block を取り除いたうえで、
@@ -50,12 +68,16 @@ discover_comments() {
   since=$(cat "$STATE_DIR/last-poll" 2>/dev/null || date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
   since=$(date -u -d "$since -1 minute" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$since")
 
+  # 取得は updated の降順のまま（since は updated_at 基準のため、per_page で溢れる
+  # ときに窓の新しい側を落とさない）。処理順は取得後のソートで決める
   local raw
   raw=$(
-    gh api "repos/$REPO/issues/comments?sort=updated&direction=desc&per_page=100&since=$since" \
-      --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url}' 2>/dev/null
-    gh api "repos/$REPO/pulls/comments?sort=updated&direction=desc&per_page=100&since=$since" \
-      --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url:.pull_request_url}' 2>/dev/null
+    {
+      gh api "repos/$REPO/issues/comments?sort=updated&direction=desc&per_page=100&since=$since" \
+        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url, created_at}' 2>/dev/null
+      gh api "repos/$REPO/pulls/comments?sort=updated&direction=desc&per_page=100&since=$since" \
+        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url:.pull_request_url, created_at}' 2>/dev/null
+    } | jq -sc 'sort_by((.issue_url | split("/") | last | tonumber), .created_at)[]'
   )
 
   [[ -n $raw ]] || return 0

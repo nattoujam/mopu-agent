@@ -69,6 +69,17 @@ gate() {
   check_budget
 }
 
+# 同じ親を持つ sub-issue は、先に作られたものが後続の前提になる。番号が若い
+# 兄弟が open（＝PR が未マージでベースに入っていない）うちは着手を見送る。
+# 待っている Issue 番号を表示用に返す。--task 指定とコメント由来のタスクは
+# deps を持たないので、この判定を素通りする
+sub_issue_deps() {
+  local deps
+  deps=$(jq -r '(.deps // []) | map("#\(.)") | join(", ")' <<<"$1")
+  [[ -n $deps ]] || return 1
+  printf '%s' "$deps"
+}
+
 # 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
 # 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる
 in_flight_blocked() {
@@ -107,7 +118,9 @@ log "$(wc -l <<<"$tasks") 件のタスクを検出しました"
 if (( DRY_RUN )); then
   while IFS= read -r t; do
     line=$(jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"' <<<"$t")
-    if in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
+    if blocking=$(sub_issue_deps "$t"); then
+      line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
+    elif in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
       line+="  ← 進行中の PR があるためスキップ"
     fi
     printf '%s\n' "$line"
@@ -130,6 +143,10 @@ while IFS= read -r t; do
   fi
 
   number=$(jq -r '.number' <<<"$t")
+  if blocking=$(sub_issue_deps "$t"); then
+    warn "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
+    continue
+  fi
   if in_flight_blocked "$number"; then
     warn "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
     continue
