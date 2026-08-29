@@ -59,6 +59,21 @@ extract_instruction() {
   done < <(printf '%s\n' "$1" | strip_code_blocks)
 }
 
+# PR へのコメントは PR 番号で届くが、タスクの番号は元 Issue のものでなければ
+# ならない。PR 番号のままだと agent/issue-<PR番号> という別のブランチで作業して
+# しまい、進行中 PR のゲートも「その PR 自身のタスク」と認識できずに弾く。
+# エージェントが作った PR はブランチ名に元 Issue 番号を持つのでそこから戻す
+resolve_issue_number() {
+  local number="$1" head suffix
+  head=$(gh pr view "$number" -R "$REPO" --json headRefName --jq .headRefName 2>/dev/null)
+  suffix="${head#"$BRANCH_PREFIX"}"
+  if [[ -n $head && $suffix != "$head" && $suffix =~ ^[0-9]+$ ]]; then
+    printf '%s' "$suffix"
+  else
+    printf '%s' "$number"
+  fi
+}
+
 # Issue/PR コメントと PR レビューコメントを走査する
 # {kind, number, title, body, actor, comment, comment_id}
 discover_comments() {
@@ -96,6 +111,7 @@ discover_comments() {
 
     number=$(jq -r '.issue_url' <<<"$row" | grep -oE '[0-9]+$')
     [[ -n $number ]] || continue
+    number=$(resolve_issue_number "$number")
 
     local title
     title=$(gh issue view "$number" -R "$REPO" --json title --jq .title 2>/dev/null) || continue
