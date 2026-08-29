@@ -96,9 +96,13 @@ init_seen_baseline
 tasks=""
 
 if [[ -n $ONLY_TASK ]]; then
-  tasks=$(gh issue view "$ONLY_TASK" -R "$REPO" --json number,title,body,author \
-    --jq '{kind:"issue", number, title, body, actor:.author.login}' 2>/dev/null) \
-    || die "Issue #$ONLY_TASK を取得できませんでした"
+  if (( RETRY )) && tasks=$(load_leftover_task "$ONLY_TASK"); then
+    log "前回のタスクを引き継ぎます: $(jq -r '"[\(.kind)] #\(.number) \(.title)"' <<<"$tasks")"
+  else
+    tasks=$(gh issue view "$ONLY_TASK" -R "$REPO" --json number,title,body,author \
+      --jq '{kind:"issue", number, title, body, actor:.author.login}' 2>/dev/null) \
+      || die "Issue #$ONLY_TASK を取得できませんでした"
+  fi
 else
   tasks=$(discover_labeled)
   comments=$(discover_comments)
@@ -165,6 +169,8 @@ while IFS= read -r t; do
   comment_id=$(jq -r '.comment_id // ""' <<<"$t")
 
   ensure_repo
+  # shellcheck disable=SC2034  # run-task.sh が --retry 用の控えとして書き出す
+  CURRENT_TASK_JSON="$t"
   run_task "$kind" "$number" "$title" "$body" "$comment"
   if (( LAST_TASK_OPENED_PR )); then
     OPEN_AGENT_BRANCHES+=("${BRANCH_PREFIX}${number}")

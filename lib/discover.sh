@@ -123,9 +123,11 @@ discover_comments() {
   done <<<"$raw"
 }
 
+# --retry は記録済みのコメントを再処理するため、追記の前に重複を弾く
 mark_seen() {
   local id="$1"
-  [[ -n $id ]] && echo "$id" >> "$SEEN_FILE"
+  [[ -n $id ]] || return 0
+  grep -qxF "$id" "$SEEN_FILE" || echo "$id" >> "$SEEN_FILE"
 }
 
 # 初回実行時に過去のコメントを一斉処理しないための初期化
