@@ -20,8 +20,7 @@ set_labels() {
   done
 }
 
-# レビュアーの指定に失敗しても PR 自体は成立させる。GitHub は PR の author を
-# reviewer にできないため、App を使わず owner 名義で動かす構成では必ず失敗する
+# レビュアーの指定に失敗しても PR 自体は成立させる
 request_review() {
   local task_id="$1" branch="$2" reviewer="${REPO%%/*}" out
   if ! out=$(gh pr edit "$branch" -R "$REPO" --add-reviewer "$reviewer" 2>&1); then

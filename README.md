@@ -9,6 +9,16 @@ Issue に agent:queued ラベル ─┐                              ┌─▶ p
 コメントに /claude ──────────┘                              └─▶ タスク分解 ─▶ sub issue
 ```
 
+## 依存
+
+- `gh` 2.73.0 以上 — これ未満は `gh pr edit` が Projects (classic) 廃止の GraphQL エラーで落ちる
+- `jq`
+- `git`
+- `claude`
+- `flock`
+- `timeout`
+- `python3` — Web コンソール用（標準ライブラリのみ。追加パッケージは不要）
+
 ## セットアップ
 
 ```bash
@@ -18,10 +28,6 @@ $EDITOR config.env        # 最低限 REPO と ALLOWED_ACTORS を設定
 ./poll.sh --dry-run       # 検出されるタスクを確認
 ./poll.sh                 # 実行
 ```
-
-必要なコマンド: `gh`（認証済み）, `jq`, `git`, `claude`, `flock`, `timeout`
-サンドボックス用: `bubblewrap`, `socat`, `ripgrep`（`sudo pacman -S bubblewrap socat ripgrep`）
-Web コンソール用: `python3`（標準ライブラリのみ。追加パッケージは不要）
 
 ## GitHub App として投稿する（任意）
 
@@ -133,7 +139,6 @@ Assignees を付けないのは、**GitHub App の bot ユーザーが assignabl
 `GET /repos/{owner}/{repo}/assignees/<app-slug>[bot]` は 404 を返す（人間のアカウントは 204）。
 
 Reviewers の指定に失敗した場合は警告を出すだけで、PR 自体は成立させる。
-GitHub は PR の author を reviewer にできないため、App を使わず owner 名義で動かす構成では必ず失敗する。
 
 ## Web コンソール
 
