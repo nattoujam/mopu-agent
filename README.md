@@ -230,7 +230,7 @@ journalctl --user -u mopu-console -f
 
 ### 仕組み
 
-エージェントはサンドボックス内でネットワークを遮断され `gh` も拒否されているため、**自分では sub issue を作れない**。
+エージェントは `gh` も `curl` も拒否されているため、**自分では sub issue を作れない**。
 分解結果はタスク用ディレクトリ直下（リポジトリの外）の `.mopu-agent-plan.json` に書かせ、`lib/run-task.sh` がそれを読んで GitHub API を叩く。
 
 ```json
@@ -290,12 +290,12 @@ journalctl --user -u mopu-console -f
 |---|---|
 | ファイル | `Read`/`Edit`/`Write` はタスク用ディレクトリの絶対パス配下のみ許可 |
 | シェル | Bash は必要なコマンドだけを明示許可。`rm` / `sudo` / `gh` / `curl` は拒否 |
-| ネットワーク | `strictAllowlist` + 空の `allowedDomains` で全遮断 |
+| ネットワーク | `WebFetch` / `WebSearch` と `curl` / `wget` を拒否。allow する Bash に通信するコマンドを入れない |
 | 認証情報 | `~/.ssh` `~/.config/gh` `~/.claude` を読み取り拒否、`GITHUB_TOKEN` 等を環境から除去 |
 | 設定 | `--setting-sources ''` と `--strict-mcp-config` で、対象リポジトリの hooks / MCP を読み込まない |
 | 資格情報 | App のトークンは `GIT_ASKPASS` 経由で渡し、リモート URL には埋め込まない |
 
-`git push` と `gh pr create` は**エージェントにやらせず**、ラッパースクリプトがサンドボックス外で実行する。
+`git push` と `gh pr create` は**エージェントにやらせず**、`poll.sh` 側のラッパースクリプトが実行する。
 そのため GitHub の認証情報がエージェントに渡ることはない。
 
 ### 作業ディレクトリの構成
@@ -308,10 +308,8 @@ worktrees/<task-id>/repo/              ← git worktree（対象リポジトリ�
 worktrees/<task-id>/.mopu-agent-plan.json ← タスク分解の受け渡し用
 ```
 
-サンドボックスは認証情報の読み取りを塞ぐため、**cwd に `.env` `.env.local` `package.json`
-`yarn.lock` `.npmrc` など 17 個の 0 バイトのファイルを作る**。cwd を worktree にすると
-これが `git status` に出てしまい、「変更なし」で終わったタスクがコミット漏れとして
-失敗扱いになる。1 階層下げることで `git status` の結果をそのまま信用できる。
+`.mopu-agent-plan.json` をリポジトリの外に置けるので、`git status` の結果をそのまま
+「エージェントが変更を残したか」の判定に使える。
 
 ### 実装上の注意
 
@@ -319,8 +317,10 @@ worktrees/<task-id>/.mopu-agent-plan.json ← タスク分解の受け渡し用
   権限は `settings/agent-settings.json` の allow / deny ルールだけで決まり、`--permission-mode` は効かない。
 - `Read`/`Edit`/`Write` のパス制限は、`--settings` 経由ではプロジェクト相対 (`Write(/**)`) が効かない。
   タスク用ディレクトリの絶対パスを実行時に注入している（`lib/run-task.sh`）。
-- サンドボックスの `autoAllowBashIfSandboxed` は当環境では機能しなかったため、
-  Bash は allow ルールで明示的に許可している。プロジェクト固有のコマンドは `EXTRA_ALLOWED_TOOLS` で追加する。
+- sandbox は無効にしている（`settings/agent-settings.json` の `sandbox.enabled: false`）。
+  bwrap が userns の制限で起動できない環境があるため、隔離は permissions の allow / deny
+  だけで行う。Bash も allow ルールで明示的に許可する。プロジェクト固有のコマンドは
+  `EXTRA_ALLOWED_TOOLS` で追加する。
 
 ```bash
 EXTRA_ALLOWED_TOOLS=('Bash(npm test:*)' 'Bash(npm run:*)')
@@ -357,7 +357,7 @@ lib/run-task.sh         claude -p の実行 → push → PR → コメント
 prompts/issue.md        エージェントへの追加システムプロンプト
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
-settings/               サンドボックスと権限の基本設定
+settings/               エージェントの権限の基本設定
 state/                  処理済みコメント ID、ポーリング時刻、コスト実績
 logs/<task-id>/         stream-json の生ログ、stderr、生成された settings
 logs/console/           コンソールが起動した poll.sh の実行ログ

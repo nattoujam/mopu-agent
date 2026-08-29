@@ -30,15 +30,7 @@ create_label "$LABEL_RUNNING" "fbca04" "mopu-agent: 実行中"
 create_label "$LABEL_DONE"    "0e8a16" "mopu-agent: 完了"
 create_label "$LABEL_FAILED"  "d73a4a" "mopu-agent: 失敗"
 
-log "サンドボックスの依存を確認します"
-for t in bwrap socat rg; do
-  if command -v "$t" >/dev/null 2>&1; then
-    log "  ✓ $t"
-  else
-    warn "  ✗ $t が見つかりません。sudo pacman -S ${t/bwrap/bubblewrap} でインストールしてください"
-  fi
-done
-
+log "任意の依存を確認します"
 if command -v python3 >/dev/null 2>&1; then
   log "  ✓ python3 (Web コンソール)"
 else

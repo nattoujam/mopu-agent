@@ -59,37 +59,6 @@
     ]
   },
   "sandbox": {
-    "enabled": false,
-    "autoAllowBashIfSandboxed": true,
-    "network": {
-      "allowedDomains": [],
-      "strictAllowlist": true
-    },
-    "credentials": {
-      "files": [
-        {
-          "path": "~/.ssh",
-          "mode": "deny"
-        },
-        {
-          "path": "~/.config/gh",
-          "mode": "deny"
-        },
-        {
-          "path": "~/.claude/.credentials.json",
-          "mode": "deny"
-        }
-      ],
-      "envVars": [
-        {
-          "name": "GITHUB_TOKEN",
-          "mode": "deny"
-        },
-        {
-          "name": "GH_TOKEN",
-          "mode": "deny"
-        }
-      ]
-    }
+    "enabled": false
   }
 }

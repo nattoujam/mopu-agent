@@ -10,8 +10,8 @@ ensure_repo() {
 }
 
 # エージェントの cwd はタスクディレクトリで、その直下の repo/ が worktree。
-# サンドボックスは認証情報の読み取りを塞ぐため cwd に .env や package.json の
-# 0 バイトのファイルを作るので、cwd をリポジトリの外に置いて巻き込まれないようにする
+# .mopu-agent-plan.json をリポジトリの外に置き、git status の結果をそのまま
+# 「エージェントが変更を残したか」の判定に使えるようにする
 workspace_repo() { printf '%s/%s' "$1" "$REPO_SUBDIR"; }
 
 # 失敗したタスクの worktree は調査用に残すので、同じ Issue を再実行すると
@@ -34,8 +34,8 @@ release_branch() {
 }
 
 # 使い方: workspace_identity <worktree>
-# サンドボックス内では HOME が差し替わり ~/.gitconfig を読めないため、
-# コミット時の identity を worktree のローカル設定として持たせる
+# コミットの identity を worktree のローカル設定に固定する。環境変数が引き継がれ
+# なかった場合にホストの ~/.gitconfig が使われるのを防ぐ
 workspace_identity() {
   git -C "$1" config user.name  "${GIT_AUTHOR_NAME:-mopu-agent}"
   git -C "$1" config user.email "${GIT_AUTHOR_EMAIL:-mopu-agent@localhost}"
