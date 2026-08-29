@@ -320,7 +320,7 @@ run_task() {
     # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
     # 子プロセスへ渡したくない認証情報は代わりにここで落とす
     unset GH_TOKEN GITHUB_TOKEN
-    timeout "$TASK_TIMEOUT" claude -p "$prompt" \
+    timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
       --settings "$settings" \
       --setting-sources '' \
       --strict-mcp-config --mcp-config '{"mcpServers":{}}' \

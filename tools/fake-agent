@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# claude CLI の代役。poll.sh の分岐を決め打ちで踏むための検証用スタブなので、
+# プロンプトの中身は読まず FAKE_AGENT_MODE だけで挙動を決める。
+# 出力は run-task.sh / budget.sh が読む形（stream-json の result イベントと
+# /usage の集計テキスト）に合わせてある。
+set -uo pipefail
+
+MODE="${FAKE_AGENT_MODE:-commit}"
+COST="${FAKE_AGENT_COST:-0.01}"
+SUB_ISSUES="${FAKE_AGENT_SUB_ISSUES:-2}"
+USAGE_5H="${FAKE_AGENT_USAGE_5H:-0}"
+USAGE_7D="${FAKE_AGENT_USAGE_7D:-0}"
+RATE_LIMIT="${FAKE_AGENT_RATE_LIMIT:-}"
+SLEEP="${FAKE_AGENT_SLEEP:-0}"
+
+# lib/common.sh の REPO_SUBDIR と同じ。cwd はタスクディレクトリで、その直下が worktree
+WORKTREE='repo'
+MARKER_FILE="$WORKTREE/mopu-agent-fake.md"
+PLAN_FILE='.mopu-agent-plan.json'
+
+PROMPT=""
+while (( $# )); do
+  case "$1" in
+    -p|--print) PROMPT="${2-}"; shift ;;
+  esac
+  shift
+done
+
+emit() { jq -nc "$@"; }
+
+emit_result() {
+  emit --arg r "$1" --argjson e "${2:-false}" --argjson c "$COST" \
+    '{type:"result", subtype:"success", is_error:$e, result:$r, total_cost_usd:$c, num_turns:1}'
+}
+
+# budget.sh は --output-format json の .result を parse_usage の sed に食わせる。
+# 行頭と "· resets" の並びが崩れると使用率を取れずゲートが閉じる
+if [[ $PROMPT == "/usage" ]]; then
+  emit --arg r "$(printf 'Current session: %s%% used · resets in 3h 20m\nCurrent week (all models): %s%% used · resets Mon, 9:00am' \
+    "$USAGE_5H" "$USAGE_7D")" \
+    '{type:"result", subtype:"success", is_error:false, result:$r, total_cost_usd:0, num_turns:0}'
+  exit 0
+fi
+
+emit --arg m "$MODE" '{type:"system", subtype:"init", model:"fake-agent", mode:$m}'
+
+(( SLEEP > 0 )) && sleep "$SLEEP"
+
+[[ -n $RATE_LIMIT ]] && \
+  emit --arg s "$RATE_LIMIT" '{type:"rate_limit_event", rate_limit_info:{status:$s}}'
+
+write_marker() {
+  printf '%s %s\n' "$(date -Is)" "$MODE" >> "$MARKER_FILE"
+}
+
+git_commit() {
+  git -C "$WORKTREE" add -A \
+    && git -C "$WORKTREE" commit --quiet -m "fake-agent: 検証用のダミー変更 ($MODE)"
+}
+
+write_plan() {
+  jq -n --argjson n "$SUB_ISSUES" \
+    '{summary:"検証用のダミー分解です。",
+      reason:"fake-agent が FAKE_AGENT_MODE=plan で生成しました。",
+      sub_issues:[range($n) | {title:"ダミー sub issue \(.+1)", body:"fake-agent が作成しました。"}]}' \
+    > "$PLAN_FILE"
+}
+
+case "$MODE" in
+  commit)
+    if ! { write_marker && git_commit; }; then
+      emit_result "コミットに失敗しました（worktree がありません）" true
+      exit 1
+    fi
+    emit_result "$MARKER_FILE を更新してコミットしました。"
+    ;;
+  noop)
+    emit_result "調査した結果、変更は不要でした。"
+    ;;
+  dirty)
+    write_marker
+    emit_result "$MARKER_FILE を編集しました（コミットはしていません）。"
+    ;;
+  plan)
+    write_plan
+    emit_result "タスクが大きいため分解しました。"
+    ;;
+  badplan)
+    printf '{"sub_issues": []}\n' > "$PLAN_FILE"
+    emit_result "タスクが大きいため分解しました。"
+    ;;
+  error)
+    emit_result "タスクを完了できませんでした。" true
+    ;;
+  crash)
+    echo "fake-agent: FAKE_AGENT_MODE=crash により異常終了します" >&2
+    exit 1
+    ;;
+  *)
+    echo "fake-agent: 不明な FAKE_AGENT_MODE: $MODE" >&2
+    exit 2
+    ;;
+esac

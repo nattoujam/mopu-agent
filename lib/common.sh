@@ -43,6 +43,7 @@ load_config() {
   : "${LABEL_DONE:=agent:done}"
   : "${LABEL_FAILED:=agent:failed}"
   : "${MODEL:=opus}"
+  : "${CLAUDE_BIN:=claude}"
   : "${TASK_TIMEOUT:=30m}"
   : "${MAX_TASK_BUDGET_USD:=3}"
   : "${MAX_5H_PERCENT:=50}"
@@ -51,6 +52,17 @@ load_config() {
   : "${MAX_SUB_ISSUES:=5}"
   : "${MAX_OPEN_AGENT_PRS:=1}"
   declare -p EXTRA_ALLOWED_TOOLS >/dev/null 2>&1 || EXTRA_ALLOWED_TOOLS=()
+
+  # エージェントは cd したうえで起動するため、パス指定は AGENT_DIR 基準で
+  # 絶対パスに直しておく
+  if [[ $CLAUDE_BIN == */* ]]; then
+    [[ $CLAUDE_BIN == /* ]] || CLAUDE_BIN="$AGENT_DIR/${CLAUDE_BIN#./}"
+    [[ -x $CLAUDE_BIN ]] || die "config.env: CLAUDE_BIN を実行できません: $CLAUDE_BIN"
+  else
+    command -v "$CLAUDE_BIN" >/dev/null 2>&1 \
+      || die "config.env: CLAUDE_BIN が見つかりません: $CLAUDE_BIN"
+  fi
+  export CLAUDE_BIN
 
   if [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]]; then
     APP_PRIVATE_KEY="${APP_PRIVATE_KEY/#\~/$HOME}"
@@ -71,7 +83,7 @@ load_config() {
 
 require_tools() {
   local missing=()
-  for t in gh jq git claude flock timeout; do
+  for t in gh jq git flock timeout; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   (( ${#missing[@]} == 0 )) || die "必要なコマンドがありません: ${missing[*]}"

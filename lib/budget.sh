@@ -3,7 +3,7 @@
 # /usage はローカルコマンドとして処理され API 呼び出しを伴わない（実測: num_turns=0,
 # total_cost_usd=0, 約1.8秒）。そのためタスクごとに呼び直しても枠を消費しない。
 fetch_usage() {
-  timeout 60 claude -p "/usage" \
+  timeout 60 "$CLAUDE_BIN" -p "/usage" \
     --output-format json \
     --setting-sources '' \
     --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
