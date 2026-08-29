@@ -2,8 +2,8 @@
 
 ## 動作検証
 
-`config.env` の `CLAUDE_BIN` を `./tools/fake-agent` に向けると、LLM を一切呼ばずに
-`poll.sh` の分岐だけを踏める。スタブはプロンプトを読まず、環境変数で挙動を決める。
+`CLAUDE_BIN` を `./tools/fake-agent` に向けると、LLM を呼ばずに `poll.sh` の分岐だけを踏める。
+スタブはプロンプトを読まず、環境変数で挙動を決める。
 
 ```bash
 CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
@@ -29,8 +29,7 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
 | `FAKE_AGENT_COST` | `0.01` | `total_cost_usd` の値。`state/spend.jsonl` の検証に使う |
 | `FAKE_AGENT_SUB_ISSUES` | `2` | `plan` モードで作る sub issue の件数 |
 
-Issue の作成やラベル操作は本物の GitHub を叩くので、検証用のリポジトリを `REPO` に
-指定すること。
+Issue の作成やラベル操作は本物の GitHub を叩く。`REPO` には検証用のリポジトリを指定すること。
 
 ## モジュールの責務
 
