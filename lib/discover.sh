@@ -75,7 +75,9 @@ resolve_issue_number() {
 }
 
 # Issue/PR コメントと PR レビューコメントを走査する
-# {kind, number, title, body, actor, comment, comment_id}
+# {kind, number, title, body, actor, comment, comment_id, reply_kind, reply_number}
+# number は作業対象の Issue 番号、reply_* は報告の返信先（コメントが実際に
+# 置かれている Issue / PR とスレッド）を指す
 discover_comments() {
   # URL クエリでは "+09:00" の + が空白として解釈されるため UTC の Z 形式で渡す。
   # 取りこぼしを避けて 1 分さかのぼる（重複は seen-comments.txt で弾かれる）
@@ -89,9 +91,9 @@ discover_comments() {
   raw=$(
     {
       gh api "repos/$REPO/issues/comments?sort=updated&direction=desc&per_page=100&since=$since" \
-        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url, created_at}' 2>/dev/null
+        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url, created_at, reply_kind:"issue"}' 2>/dev/null
       gh api "repos/$REPO/pulls/comments?sort=updated&direction=desc&per_page=100&since=$since" \
-        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url:.pull_request_url, created_at}' 2>/dev/null
+        --jq '.[] | {id, body, actor:.user.login, url:.html_url, issue_url:.pull_request_url, created_at, reply_kind:"review"}' 2>/dev/null
     } | jq -sc 'sort_by((.issue_url | split("/") | last | tonumber), .created_at)[]'
   )
 
@@ -99,19 +101,20 @@ discover_comments() {
 
   while IFS= read -r row; do
     [[ -n $row ]] || continue
-    local id actor body number
+    local id actor body number reply_kind reply_number
     id=$(jq -r '.id' <<<"$row")
     actor=$(jq -r '.actor' <<<"$row")
     body=$(jq -r '.body' <<<"$row")
+    reply_kind=$(jq -r '.reply_kind' <<<"$row")
 
     grep -qxF "$id" "$SEEN_FILE" && continue
     [[ $body == *"$COMMENT_MARKER"* ]] && { echo "$id" >> "$SEEN_FILE"; continue; }
     is_allowed_actor "$actor" || continue
     has_trigger "$body" || continue
 
-    number=$(jq -r '.issue_url' <<<"$row" | grep -oE '[0-9]+$')
-    [[ -n $number ]] || continue
-    number=$(resolve_issue_number "$number")
+    reply_number=$(jq -r '.issue_url' <<<"$row" | grep -oE '[0-9]+$')
+    [[ -n $reply_number ]] || continue
+    number=$(resolve_issue_number "$reply_number")
 
     local title
     title=$(gh issue view "$number" -R "$REPO" --json title --jq .title 2>/dev/null) || continue
@@ -119,7 +122,9 @@ discover_comments() {
     jq -nc --arg n "$number" --arg t "$title" \
       --arg b "$(gh issue view "$number" -R "$REPO" --json body --jq .body 2>/dev/null)" \
       --arg a "$actor" --arg c "$(extract_instruction "$body")" --arg id "$id" \
-      '{kind:"comment", number:($n|tonumber), title:$t, body:$b, actor:$a, comment:$c, comment_id:$id}'
+      --arg rk "$reply_kind" --arg rn "$reply_number" \
+      '{kind:"comment", number:($n|tonumber), title:$t, body:$b, actor:$a, comment:$c, comment_id:$id,
+        reply_kind:$rk, reply_number:($rn|tonumber)}'
   done <<<"$raw"
 }
 

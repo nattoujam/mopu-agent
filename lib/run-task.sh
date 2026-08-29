@@ -7,6 +7,43 @@ post_comment() {
     | gh issue comment "$issue" -R "$REPO" --body-file - >/dev/null
 }
 
+# 報告の宛先。タスクの番号は元 Issue に読み替えるが、報告まで Issue 側へ流すと
+# PR で受けた指示とその結果が別のページに分かれてしまうため、指示が来た
+# コメントと同じ場所に返す
+REPLY_KIND=issue
+REPLY_NUMBER=""
+REPLY_COMMENT_ID=""
+
+set_reply_target() {
+  local number="$1" task="${2:-}" rn
+  REPLY_KIND=issue
+  REPLY_NUMBER="$number"
+  REPLY_COMMENT_ID=""
+
+  [[ -n $task ]] || return 0
+  rn=$(jq -r '.reply_number // empty' <<<"$task" 2>/dev/null)
+  [[ -n $rn ]] || return 0
+
+  REPLY_NUMBER="$rn"
+  REPLY_KIND=$(jq -r '.reply_kind // "issue"' <<<"$task")
+  REPLY_COMMENT_ID=$(jq -r '.comment_id // ""' <<<"$task")
+}
+
+# PR のレビューコメントは専用エンドポイントを使わないと同じスレッドに入らない。
+# 会話タブのコメントには返信スレッドがないので、通常のコメントで返す
+post_report() {
+  local body="$1"
+  if [[ $REPLY_KIND == review && -n $REPLY_COMMENT_ID ]]; then
+    if gh api -X POST "repos/$REPO/pulls/$REPLY_NUMBER/comments/$REPLY_COMMENT_ID/replies" \
+      -f "body=$(printf '%s\n\n%s\n' "$COMMENT_MARKER" "$body")" >/dev/null 2>&1
+    then
+      return 0
+    fi
+    warn "レビューコメント $REPLY_COMMENT_ID への返信に失敗しました。#$REPLY_NUMBER にコメントします"
+  fi
+  post_comment "$REPLY_NUMBER" "$body"
+}
+
 # 付いていないラベルの削除は gh がエラーにするため、追加と削除を分けて実行する
 set_labels() {
   local issue="$1" add="$2" l
@@ -86,7 +123,7 @@ handle_plan() {
   if ! validate_plan "$plan"; then
     err "[$task_id] $PLAN_FILE_NAME の内容が不正です"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
+    post_report "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
       "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
@@ -103,14 +140,14 @@ handle_plan() {
   if [[ -z $created ]]; then
     err "[$task_id] sub issue を 1 件も作成できませんでした"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$(agent_relpath "$AGENT_DIR/logs/$task_id")\`"
+    post_report "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$(agent_relpath "$AGENT_DIR/logs/$task_id")\`"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
   fi
 
   set_labels "$number" "$LABEL_DONE"
-  post_comment "$number" "$(
+  post_report "$(
     printf '%s\n\n---\n\n**このタスクは大きいため、実装せず分解しました。**\n\n' "${result:-}"
     [[ -n $summary ]] && printf '%s\n\n' "$summary"
     [[ -n $reason ]]  && printf '理由: %s\n\n' "$reason"
@@ -207,6 +244,7 @@ run_task() {
   local kind="$1" number="$2" title="$3" body="$4" comment="${5:-}"
   local task_id
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
+  set_reply_target "$number" "${CURRENT_TASK_JSON:-}"
   local branch="${BRANCH_PREFIX}${number}"
   local task_dir="$AGENT_DIR/worktrees/$task_id"
 
@@ -248,7 +286,7 @@ run_task() {
   if (( ! ok )); then
     err "[$task_id] worktree の準備に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "エージェントの作業ツリー準備に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
+    post_report "エージェントの作業ツリー準備に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
     return 1
   fi
 
@@ -349,7 +387,7 @@ run_task() {
     local detail
     detail=$(tail -20 "$log_dir/stderr.log")
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
+    post_report "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
       "$rc" "${result:-}" "${detail:-（stderr なし）}" "$(agent_relpath "$log_dir")")"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
@@ -370,7 +408,7 @@ run_task() {
     if [[ -n $(git -C "$wt" status --porcelain) ]]; then
       err "[$task_id] コミットされていない変更が残っています"
       set_labels "$number" "$LABEL_FAILED"
-      post_comment "$number" "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
+      post_report "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
         "${result:-（応答なし）}" "$(agent_relpath "$wt")")"
       record_spend "$task_id" "$cost" "$pct_before" ""
       log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
@@ -379,7 +417,7 @@ run_task() {
 
     log "[$task_id] コード変更なし。結果のみコメントします"
     set_labels "$number" "$LABEL_DONE"
-    post_comment "$number" "${result:-（応答なし）}"
+    post_report "${result:-（応答なし）}"
     record_spend "$task_id" "$cost" "$pct_before" ""
     remove_workspace "$task_dir"
     return 0
@@ -391,7 +429,7 @@ run_task() {
   if ! "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease; then
     err "[$task_id] push に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
-    post_comment "$number" "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
+    post_report "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
     record_spend "$task_id" "$cost" "$pct_before" ""
     return 1
   fi
@@ -410,7 +448,7 @@ run_task() {
     else
       err "[$task_id] PR の作成に失敗しました: $pr_out"
       set_labels "$number" "$LABEL_FAILED"
-      post_comment "$number" "$(printf 'ブランチ `%s` は push 済みですが、PR の作成に失敗しました。\n\n```\n%s\n```' "$branch" "$pr_out")"
+      post_report "$(printf 'ブランチ `%s` は push 済みですが、PR の作成に失敗しました。\n\n```\n%s\n```' "$branch" "$pr_out")"
       record_spend "$task_id" "$cost" "$pct_before" ""
       return 1
     fi
@@ -420,7 +458,7 @@ run_task() {
   LAST_TASK_OPENED_PR=1
 
   set_labels "$number" "$LABEL_DONE"
-  post_comment "$number" "$(printf '%s\n\n**PR**: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
+  post_report "$(printf '%s\n\n**PR**: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
     "$result" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")"
 
   local pct_after=""
