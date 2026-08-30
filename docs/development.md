@@ -18,6 +18,8 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
 | `badplan` | `sub_issues` が空の plan を書く | `validate_plan` 不合格 → `agent:failed` |
 | `error` | `is_error: true` を返す | 実行失敗 → `agent:failed` |
 | `crash` | stderr を出して exit 1 | 実行失敗 → `agent:failed` |
+| `nosession` | `--resume` 付きのときだけ「会話が見つからない」で落ちる | 会話なしで実行し直す |
+| `budget` | `error_max_budget_usd` を返す | 実行失敗 → `agent:failed`、控えた会話 ID は捨てる |
 
 モードと独立して効く変数もある。
 
@@ -28,6 +30,7 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
 | `FAKE_AGENT_SLEEP` | `0` | 指定秒だけ待つ。`TASK_TIMEOUT` の検証に使う |
 | `FAKE_AGENT_COST` | `0.01` | `total_cost_usd` の値。`state/spend.jsonl` の検証に使う |
 | `FAKE_AGENT_SUB_ISSUES` | `2` | `plan` モードで作る sub issue の件数 |
+| `FAKE_AGENT_SESSION_ID` | `00000000-0000-4000-8000-fa4ea9e00000` | `result` に載せる会話 ID。`state/sessions.json` の検証に使う |
 
 Issue の作成やラベル操作は本物の GitHub を叩く。`REPO` には検証用のリポジトリを指定すること。
 
@@ -47,7 +50,7 @@ prompts/issue.md        エージェントへの追加システムプロンプ�
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
 settings/               エージェントの権限の基本設定
-state/                  処理済みコメント ID、ポーリング時刻、コスト実績
+state/                  処理済みコメント ID、ポーリング時刻、コスト実績、会話 ID
 logs/<task-id>/         stream-json の生ログ、stderr、生成された settings
 logs/console/           コンソールが起動した poll.sh の実行ログ
 ```

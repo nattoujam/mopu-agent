@@ -87,9 +87,10 @@ load_config() {
   STATE_DIR="$AGENT_DIR/state"
   SEEN_FILE="$STATE_DIR/seen-comments.txt"
   SPEND_FILE="$STATE_DIR/spend.jsonl"
+  SESSION_FILE="$STATE_DIR/sessions.json"
   mkdir -p "$STATE_DIR" "$AGENT_DIR/logs" "$AGENT_DIR/worktrees" "$AGENT_DIR/repos"
   touch "$SEEN_FILE" "$SPEND_FILE"
-  export AGENT_COMMIT REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE
+  export AGENT_COMMIT REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE SESSION_FILE
 }
 
 require_tools() {

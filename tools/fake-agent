@@ -12,6 +12,7 @@ USAGE_5H="${FAKE_AGENT_USAGE_5H:-0}"
 USAGE_7D="${FAKE_AGENT_USAGE_7D:-0}"
 RATE_LIMIT="${FAKE_AGENT_RATE_LIMIT:-}"
 SLEEP="${FAKE_AGENT_SLEEP:-0}"
+SESSION_ID="${FAKE_AGENT_SESSION_ID:-00000000-0000-4000-8000-fa4ea9e00000}"
 
 # lib/common.sh の REPO_SUBDIR と同じ。cwd はタスクディレクトリで、その直下が worktree
 WORKTREE='repo'
@@ -19,9 +20,11 @@ MARKER_FILE="$WORKTREE/mopu-agent-fake.md"
 PLAN_FILE='.mopu-agent-plan.json'
 
 PROMPT=""
+RESUME_ID=""
 while (( $# )); do
   case "$1" in
-    -p|--print) PROMPT="${2-}"; shift ;;
+    -p|--print)  PROMPT="${2-}"; shift ;;
+    -r|--resume) RESUME_ID="${2-}"; shift ;;
   esac
   shift
 done
@@ -29,8 +32,8 @@ done
 emit() { jq -nc "$@"; }
 
 emit_result() {
-  emit --arg r "$1" --argjson e "${2:-false}" --argjson c "$COST" \
-    '{type:"result", subtype:"success", is_error:$e, result:$r, total_cost_usd:$c, num_turns:1}'
+  emit --arg r "$1" --argjson e "${2:-false}" --argjson c "$COST" --arg s "$SESSION_ID" \
+    '{type:"result", subtype:"success", is_error:$e, result:$r, total_cost_usd:$c, num_turns:1, session_id:$s}'
 }
 
 # budget.sh は --output-format json の .result を parse_usage の sed に食わせる。
@@ -45,6 +48,9 @@ fi
 emit --arg m "$MODE" '{type:"system", subtype:"init", model:"fake-agent", mode:$m}'
 
 (( SLEEP > 0 )) && sleep "$SLEEP"
+
+# 引き継ぎが実際に渡っているかをログで追えるようにする
+[[ -n $RESUME_ID ]] && echo "fake-agent: 会話 $RESUME_ID を再開しました" >&2
 
 [[ -n $RATE_LIMIT ]] && \
   emit --arg s "$RATE_LIMIT" '{type:"rate_limit_event", rate_limit_info:{status:$s}}'
@@ -91,6 +97,21 @@ case "$MODE" in
     ;;
   error)
     emit_result "タスクを完了できませんでした。" true
+    ;;
+  # 保持期間を過ぎた会話を再開しようとした状況。--resume 付きのときだけ落ちるので、
+  # run-task.sh が会話なしで実行し直すところまで踏める
+  nosession)
+    if [[ -n $RESUME_ID ]]; then
+      echo "No conversation found with session ID: $RESUME_ID" >&2
+      exit 1
+    fi
+    emit_result "会話を再開できなかったので、最初からやり直しました。"
+    ;;
+  budget)
+    emit --arg r "予算の上限に達したため中断しました。" --argjson c "$COST" --arg s "$SESSION_ID" \
+      '{type:"result", subtype:"error_max_budget_usd", is_error:true, result:$r,
+        total_cost_usd:$c, num_turns:1, session_id:$s, terminal_reason:"budget_exhausted"}'
+    exit 1
     ;;
   crash)
     echo "fake-agent: FAKE_AGENT_MODE=crash により異常終了します" >&2

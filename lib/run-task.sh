@@ -191,6 +191,40 @@ load_leftover_task() {
   jq -ec 'del(.commit)' "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
 }
 
+# タスクの会話 ID を Issue 番号ごとに控える。--retry の再開と、PR コメントへの
+# 対応で前回の会話を引き継ぐために使う。作業ツリーと違って成功時にも消さないので、
+# レビューが数日後に来ても、その PR を書いたときの判断から続けられる
+record_session() {
+  local number="$1" sid="$2" tmp
+  [[ -n $sid && $sid != null ]] || return 0
+  [[ -f $SESSION_FILE ]] || echo '{}' > "$SESSION_FILE"
+  tmp="$SESSION_FILE.tmp"
+  if jq --arg n "$number" --arg s "$sid" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.[$n] = {session_id: $s, updated: $t}' "$SESSION_FILE" > "$tmp" 2>/dev/null
+  then
+    mv "$tmp" "$SESSION_FILE"
+  else
+    rm -f "$tmp"
+    warn "会話 ID を記録できませんでした: #$number"
+  fi
+}
+
+forget_session() {
+  local number="$1" tmp
+  [[ -f $SESSION_FILE ]] || return 0
+  tmp="$SESSION_FILE.tmp"
+  if jq --arg n "$number" 'del(.[$n])' "$SESSION_FILE" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$SESSION_FILE"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+session_of_issue() {
+  [[ -f $SESSION_FILE ]] || return 0
+  jq -r --arg n "$1" '.[$n].session_id // empty' "$SESSION_FILE" 2>/dev/null
+}
+
 # --retry で渡す前回の失敗の情報。何が起きて、何がやりかけで残っているか
 build_retry_context() {
   local prev_log="$1" wt="$2" result stderr changes
@@ -238,6 +272,41 @@ build_prompt() {
     printf '%s\n' "${body:-(本文なし)}"
     echo '```'
   } | head -c 60000
+}
+
+# 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <プロンプト> <システムプロンプト> <設定ファイル> [再開する会話 ID]
+invoke_agent() {
+  local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" resume_id="${6:-}"
+  local -a resume_args=()
+
+  # --fork-session で会話を分岐させる。元の会話をそのまま残せるので、再開した
+  # 先で失敗しても同じ地点から何度でもやり直せる
+  if [[ -n $resume_id ]]; then
+    resume_args=(--resume "$resume_id" --fork-session)
+    # 同じタスク説明が会話の中で二度目になるため、新しい依頼ではないと断っておく
+    sys_prompt+=$'\n\n'"## 会話の再開について
+
+これは以前の会話の続きです。上のタスク説明は改めて渡したもので、新しい依頼では
+ありません。前回読んだファイルや下した判断は、そのまま引き継いで構いません。"
+  fi
+
+  (
+    cd "$task_dir" || exit 1
+    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB は使わない。これを立てると sandbox の
+    # filesystem isolation が強制的に維持され、sandbox.enabled=false でも
+    # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
+    # 子プロセスへ渡したくない認証情報は代わりにここで落とす
+    unset GH_TOKEN GITHUB_TOKEN
+    timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
+      "${resume_args[@]}" \
+      --settings "$settings" \
+      --setting-sources '' \
+      --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+      --append-system-prompt "$sys_prompt" \
+      --output-format stream-json --verbose \
+      --model "$MODEL" \
+      --max-budget-usd "$MAX_TASK_BUDGET_USD"
+  ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
 }
 
 # 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文> <コメント本文>
@@ -353,28 +422,47 @@ run_task() {
     fi
   fi
 
+  # 前回の会話を引き継ぐ条件。--retry は中断したタスクの再開、コメントは自分が
+  # 出した PR へのレビュー対応で、どちらも前回の続きになる
+  local resume_id=""
+  if (( ${RETRY:-0} )) || [[ $kind == comment ]]; then
+    resume_id=$(session_of_issue "$number")
+    [[ -n $resume_id ]] && log "[$task_id] 前回の会話を再開します: $resume_id"
+  fi
+
   local rc=0
-  (
-    cd "$task_dir" || exit 1
-    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB は使わない。これを立てると sandbox の
-    # filesystem isolation が強制的に維持され、sandbox.enabled=false でも
-    # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
-    # 子プロセスへ渡したくない認証情報は代わりにここで落とす
-    unset GH_TOKEN GITHUB_TOKEN
-    timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
-      --settings "$settings" \
-      --setting-sources '' \
-      --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
-      --append-system-prompt "$sys_prompt" \
-      --output-format stream-json --verbose \
-      --model "$MODEL" \
-      --max-budget-usd "$MAX_TASK_BUDGET_USD"
-  ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log" || rc=$?
+  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$resume_id" || rc=$?
+
+  # 保持期間を過ぎた会話は再開できない。この失敗は課金ゼロで即座に返るので、
+  # 会話なしでやり直す。前回の情報はプロンプト側にも入っているため、
+  # 再開できなくてもタスク自体は成立する
+  if [[ -n $resume_id ]] && (( rc != 0 )) \
+    && grep -q 'No conversation found with session ID' "$log_dir/stderr.log" 2>/dev/null
+  then
+    warn "[$task_id] 会話 $resume_id が見つかりません。新しい会話で実行します"
+    forget_session "$number"
+    resume_id=""
+    rc=0
+    invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "" || rc=$?
+  fi
 
   local result is_error cost
   result=$(last_result "$log_dir/stream.jsonl")
   is_error=$(jq -r 'select(.type=="result") | .is_error' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
   cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+
+  local subtype session_id
+  subtype=$(jq -r 'select(.type=="result") | .subtype' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  session_id=$(jq -r 'select(.type=="result") | .session_id // empty' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+
+  # 打ち切りで終わった会話を引き継ぐと、膨らんだ context のまま再開して同じ壁に
+  # ぶつかる。timeout(1) の 124 と --max-budget-usd による打ち切りがこれにあたる
+  if (( rc == 124 )) || [[ $subtype == error_max_budget_usd ]]; then
+    warn "[$task_id] 打ち切りで終わったため、この会話は引き継ぎません (${subtype:-timeout})"
+    forget_session "$number"
+  else
+    record_session "$number" "$session_id"
+  fi
 
   # 枠の非常ブレーキ。allowed_warning / rejected を検知したら呼び出し元に伝える
   local rl_status
