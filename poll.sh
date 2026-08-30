@@ -37,6 +37,8 @@ done
 require_tools
 load_config
 
+log "mopu-agent $AGENT_COMMIT"
+
 source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"

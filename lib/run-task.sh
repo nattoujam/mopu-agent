@@ -183,11 +183,12 @@ TASK_FILE_NAME='task.json'
 # --retry で前回のタスクをそのまま再現するための控え。Issue 本文から組み直すと
 # コメント由来のタスクでは指示だったコメント本文が失われる。作業ツリーではなく
 # ログ側に置くのは、エージェントの cwd から見えない場所に保つため
+# commit は実行時の記録なので、引き継ぐタスクからは落とす
 load_leftover_task() {
   local dir
   dir=$(find_leftover_task "$1")
   [[ -n $dir ]] || return 1
-  jq -ec . "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
+  jq -ec 'del(.commit)' "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
 }
 
 # --retry で渡す前回の失敗の情報。何が起きて、何がやりかけで残っているか
@@ -264,7 +265,9 @@ run_task() {
   local plan_file="$task_dir/$PLAN_FILE_NAME"
   local log_dir="$AGENT_DIR/logs/$task_id"
   mkdir -p "$log_dir"
-  [[ -n ${CURRENT_TASK_JSON:-} ]] && printf '%s\n' "$CURRENT_TASK_JSON" > "$log_dir/$TASK_FILE_NAME"
+  [[ -n ${CURRENT_TASK_JSON:-} ]] \
+    && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \
+      > "$log_dir/$TASK_FILE_NAME"
 
   # --ignore-budget ではゲートを通らず USAGE_5H が空になるため取り直す
   local pct_before="$USAGE_5H"

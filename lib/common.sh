@@ -25,6 +25,16 @@ die()  { err "$*"; exit 1; }
 # Issue コメントは公開されるため、サーバーのユーザー名を含む絶対パスは載せない
 agent_relpath() { printf '%s' "${1#"$AGENT_DIR"/}"; }
 
+# どのコードが出したログなのかを後から追うための短縮 SHA。作業ツリーに
+# 未コミットの変更があるときは -dirty を付ける（その SHA だけでは
+# 動いていたコードを再現できないため）
+agent_commit() {
+  local sha
+  sha=$(git -C "$AGENT_DIR" rev-parse --short HEAD 2>/dev/null) || { printf 'unknown'; return; }
+  [[ -n $(git -C "$AGENT_DIR" status --porcelain 2>/dev/null) ]] && sha+='-dirty'
+  printf '%s' "$sha"
+}
+
 load_config() {
   local cfg="$AGENT_DIR/config.env"
   [[ -f $cfg ]] || die "config.env がありません。config.env.example をコピーして設定してください"
@@ -71,6 +81,7 @@ load_config() {
       || warn "秘密鍵の権限が緩いです: chmod 600 $APP_PRIVATE_KEY を実行してください"
   fi
 
+  AGENT_COMMIT="$(agent_commit)"
   REPO_SLUG="${REPO//\//__}"
   REPO_DIR="$AGENT_DIR/repos/$REPO_SLUG"
   STATE_DIR="$AGENT_DIR/state"
@@ -78,7 +89,7 @@ load_config() {
   SPEND_FILE="$STATE_DIR/spend.jsonl"
   mkdir -p "$STATE_DIR" "$AGENT_DIR/logs" "$AGENT_DIR/worktrees" "$AGENT_DIR/repos"
   touch "$SEEN_FILE" "$SPEND_FILE"
-  export REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE
+  export AGENT_COMMIT REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE
 }
 
 require_tools() {

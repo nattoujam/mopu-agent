@@ -116,10 +116,14 @@ def strip_ansi_lines(text):
 def summarize_run_log(path):
     text = read_text(path, limit=256 * 1024)
     plain = ANSI_RE.sub("", text)
+    # git を引き直さずログから拾う。コンソールが読む時点では作業ツリーが
+    # 変わっているかもしれず、その実行が名乗った SHA と食い違うため
+    commit = re.search(r"mopu-agent (\S+)", plain)
     found = re.search(r"(\d+)\s*件のタスクを検出", plain)
     done = re.search(r"完了:\s*(\d+)\s*件", plain)
     idle = "処理するタスクはありません" in plain
     return {
+        "commit": commit.group(1) if commit else None,
         "detected": int(found.group(1)) if found else (0 if idle else None),
         "processed": int(done.group(1)) if done else None,
         "warnings": sum(1 for m in ANSI_RE.finditer(text) if "33" in m.group(1).split(";")),

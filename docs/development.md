@@ -51,3 +51,14 @@ state/                  処理済みコメント ID、ポーリング時刻、�
 logs/<task-id>/         stream-json の生ログ、stderr、生成された settings
 logs/console/           コンソールが起動した poll.sh の実行ログ
 ```
+
+## ログとコードの対応
+
+どのコードが出したログなのかを追えるよう、`AGENT_DIR` の短縮 SHA を次の 3 か所に
+記録している。未コミットの変更があるときは `f559662-dirty` のように印が付く。
+
+| 記録先 | 形 |
+| --- | --- |
+| `logs/<task-id>/task.json` | タスクの控えに `"commit"` を足す |
+| `logs/console/poll-<日時>.log` | 先頭行に `mopu-agent <SHA>` |
+| `state/console-runs.jsonl` | 各実行の記録に `"commit"` を足す（poll ログの先頭行から拾う） |
