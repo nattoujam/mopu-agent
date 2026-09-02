@@ -43,6 +43,31 @@ worktrees/<task-id>/.mopu-agent-plan.json ← タスク分解の受け渡し用
 EXTRA_ALLOWED_TOOLS=('Bash(npm test:*)' 'Bash(npm run:*)')
 ```
 
+## 依存の準備
+
+`npm ci` や `uv sync` は、タスクが始まる前に **`poll.sh` 側がホスト権限で** 実行する。
+コマンドは `SETUP_CMD` で指定する。
+
+```bash
+SETUP_CMD='npm ci --prefer-offline'
+SETUP_TIMEOUT="10m"
+EXTRA_ALLOWED_TOOLS=('Bash(npm test:*)' 'Bash(npm run:*)')
+```
+
+エージェント自身に install させないのは、パッケージの postinstall やビルドスクリプトが
+**任意コード実行**になるため。sandbox を切っているこの構成では、`rm` や `curl` を deny した
+囲いをそのまま迂回されてしまう。実行順を「worktree 作成 → 依存の準備 → エージェント起動」に
+固定しているので、エージェントが依存を書き換えても同じタスクの中ではインストールされない。
+
+副次的な利点として、依存の解決にかかる時間は `TASK_TIMEOUT` にも `MAX_TASK_BUDGET_USD` にも
+含まれない。
+
+依存の置き場（`node_modules/` など）は、**対象リポジトリの `.gitignore` に入れておくこと**。
+untracked のまま残ると、run-task.sh の「エージェントがコミットし忘れた変更」判定に
+引っかかってタスクが失敗する。
+
+セットアップの出力は `logs/<task-id>/setup.log` に残り、失敗したときは Issue にも返る。
+
 ## セキュリティ
 
 - **`ALLOWED_ACTORS` は必須**。空だと `poll.sh` は起動を拒否する。

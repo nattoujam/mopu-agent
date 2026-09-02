@@ -62,6 +62,8 @@ load_config() {
   : "${MAX_SUB_ISSUES:=5}"
   : "${MAX_OPEN_AGENT_PRS:=1}"
   declare -p EXTRA_ALLOWED_TOOLS >/dev/null 2>&1 || EXTRA_ALLOWED_TOOLS=()
+  : "${SETUP_CMD:=}"
+  : "${SETUP_TIMEOUT:=10m}"
 
   # エージェントは cd したうえで起動するため、パス指定は AGENT_DIR 基準で
   # 絶対パスに直しておく

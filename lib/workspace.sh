@@ -9,6 +9,18 @@ ensure_repo() {
   git -C "$REPO_DIR" fetch --quiet --prune origin || die "fetch に失敗しました"
 }
 
+# 依存の導入はエージェントではなくホスト側で、しかもエージェントが 1 バイトも
+# 書く前に済ませる。install はパッケージの postinstall やビルドスクリプトを
+# 走らせる＝任意コード実行なので、sandbox を切っているこの構成でエージェントに
+# 許すと permissions の deny ルールごと迂回される。
+# 実行順を先にしておけば、エージェントが依存を書き換えても同じタスク内では
+# インストールされない
+run_setup() {
+  local wt="$1" out="$2"
+  [[ -n $SETUP_CMD ]] || return 0
+  ( cd "$wt" && timeout "$SETUP_TIMEOUT" bash -c "$SETUP_CMD" ) > "$out" 2>&1
+}
+
 # エージェントの cwd はタスクディレクトリで、その直下の repo/ が worktree。
 # .mopu-agent-plan.json をリポジトリの外に置き、git status の結果をそのまま
 # 「エージェントが変更を残したか」の判定に使えるようにする

@@ -362,6 +362,21 @@ run_task() {
     return 1
   fi
 
+  if [[ -n $SETUP_CMD ]]; then
+    local setup_log="$log_dir/setup.log" setup_rc=0
+    log "[$task_id] 依存を準備します: $SETUP_CMD"
+    run_setup "$wt" "$setup_log" || setup_rc=$?
+    if (( setup_rc )); then
+      err "[$task_id] 依存の準備に失敗しました (exit=$setup_rc)"
+      set_labels "$number" "$LABEL_FAILED"
+      post_report "$(printf '依存の準備コマンドが失敗しました (exit=%s%s)。\n\n```\n%s\n```\n\n```\n%s\n```\n\nログ: `%s`' \
+        "$setup_rc" "$( (( setup_rc == 124 )) && printf ': %s で打ち切り' "$SETUP_TIMEOUT" )" \
+        "$SETUP_CMD" "$(tail -20 "$setup_log")" "$(agent_relpath "$log_dir")")"
+      log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+      return 1
+    fi
+  fi
+
   local sys_prompt no_decompose=0
   sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
   [[ $kind == comment ]] && sys_prompt+=$'\n\n'$(cat "$AGENT_DIR/prompts/command.md")
