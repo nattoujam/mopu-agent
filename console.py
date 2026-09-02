@@ -163,6 +163,7 @@ class Scheduler:
         self.current = None
         self.proc = None
         self.manual_requested = False
+        self.manual_retry = None
         self.runs = self._load_runs()
         self.next_run_at = time.time() + self.interval if self.enabled else None
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -202,11 +203,12 @@ class Scheduler:
             save_console_state({"interval_seconds": self.interval, "enabled": self.enabled})
         self.wake.set()
 
-    def request_run(self):
+    def request_run(self, retry_number=None):
         with self.lock:
             if self.current is not None:
                 return False
             self.manual_requested = True
+            self.manual_retry = retry_number
         self.wake.set()
         return True
 
@@ -216,33 +218,38 @@ class Scheduler:
 
     def _loop(self):
         while not self.stopping.is_set():
-            trigger = None
+            trigger = retry_number = None
             with self.lock:
                 if self.manual_requested:
                     self.manual_requested = False
-                    trigger = "manual"
+                    retry_number = self.manual_retry
+                    self.manual_retry = None
+                    trigger = "retry" if retry_number else "manual"
                 elif self.enabled and self.next_run_at and time.time() >= self.next_run_at:
                     trigger = "schedule"
             if trigger:
-                self._execute(trigger)
+                self._execute(trigger, retry_number)
                 with self.lock:
                     self.next_run_at = time.time() + self.interval if self.enabled else None
                 continue
             self.wake.wait(1.0)
             self.wake.clear()
 
-    def _execute(self, trigger):
+    def _execute(self, trigger, retry_number=None):
+        argv = [str(AGENT_DIR / "poll.sh")]
+        if retry_number:
+            argv += ["--retry", str(retry_number)]
         RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
         name = f"poll-{datetime.now():%Y%m%d-%H%M%S}.log"
         path = RUN_LOG_DIR / name
         started = time.time()
         with self.lock:
-            self.current = {"log": name, "trigger": trigger, "started_at": started}
+            self.current = {"log": name, "trigger": trigger, "started_at": started, "retry_number": retry_number}
         exit_code = None
         try:
             with path.open("wb") as fh:
                 proc = subprocess.Popen(
-                    [str(AGENT_DIR / "poll.sh")],
+                    argv,
                     cwd=str(AGENT_DIR),
                     stdin=subprocess.DEVNULL,
                     stdout=fh,
@@ -262,6 +269,7 @@ class Scheduler:
         record = {
             "log": name,
             "trigger": trigger,
+            "retry_number": retry_number,
             "started_at": started,
             "finished_at": time.time(),
             "duration_s": round(time.time() - started, 1),
@@ -576,7 +584,15 @@ class Handler(BaseHTTPRequestHandler):
             SCHEDULER.update(interval=interval, enabled=enabled)
             return self._json(self._status())
         if path == "/api/run":
-            if not SCHEDULER.request_run():
+            retry_number = None
+            if body.get("retry") is not None:
+                try:
+                    retry_number = int(body["retry"])
+                except (TypeError, ValueError):
+                    return self._error(400, "retry は Issue 番号（整数）で指定してください")
+                if retry_number < 1:
+                    return self._error(400, "retry は 1 以上の整数で指定してください")
+            if not SCHEDULER.request_run(retry_number):
                 return self._error(409, "すでにポーリングが実行中です")
             return self._json(self._status())
         return self._error(404, "not found")

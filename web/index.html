@@ -397,6 +397,10 @@ function tick() {
   }
 }
 
+function triggerLabel(r) {
+  if (r.retry_number) return `再実行 #${r.retry_number}`;
+  return r.trigger === 'manual' ? '手動実行' : '定期実行';
+}
 function runBadge(run) {
   if (run.exit_code === 0) {
     if (run.processed) return `<span class="badge ok">${run.processed} 件処理</span>`;
@@ -409,10 +413,10 @@ function renderRuns() {
   const sc = status.scheduler;
   const rows = [];
   if (sc.current) {
-    rows.push({ id: sc.current.log, when: sc.current.started_at, html: '<span class="badge run">実行中</span>', label: sc.current.trigger === 'manual' ? '手動実行' : '定期実行' });
+    rows.push({ id: sc.current.log, when: sc.current.started_at, html: '<span class="badge run">実行中</span>', label: triggerLabel(sc.current) });
   }
   for (const run of sc.runs) {
-    rows.push({ id: run.log, when: run.started_at, html: runBadge(run) + `<span class="badge">${run.duration_s}s</span>`, label: run.trigger === 'manual' ? '手動実行' : '定期実行' });
+    rows.push({ id: run.log, when: run.started_at, html: runBadge(run) + `<span class="badge">${run.duration_s}s</span>`, label: triggerLabel(run) });
   }
   if (!rows.length) {
     paintList('runs:empty', '<div class="empty">まだ実行されていません</div>', () => {});
@@ -490,10 +494,14 @@ async function openTask(id) {
       <button data-raw="stream">生ログ (stream.jsonl)</button>
       <button data-raw="stderr" ${data.stderr.trim() ? '' : 'disabled'}>stderr</button>
       <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
+      ${retryable(s) ? `<button data-retry="${s.number}">再実行</button>` : ''}
     </div>
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {
     el.onclick = () => showRaw(id, el.dataset.raw);
+  });
+  pane.querySelectorAll('[data-retry]').forEach((el) => {
+    el.onclick = () => retryTask(el.dataset.retry);
   });
   pane.querySelectorAll('[data-line]').forEach((el) => {
     el.onclick = () => showRawLine(id, el.dataset.line);
@@ -519,6 +527,7 @@ function renderEvent(e) {
     </div>${body}</div>`;
 }
 
+
 async function showRawLine(id, line) {
   let data;
   try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw?line=${encodeURIComponent(line)}`); }
@@ -526,6 +535,24 @@ async function showRawLine(id, line) {
   let text = data.text;
   try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { /* 壊れた行はそのまま出す */ }
   openModal(`${id}/stream.jsonl:${data.line}`, text);
+}
+
+// 失敗して worktree が残っているタスクだけ再実行を出す。成功したタスクの
+// --retry は引き継ぐものがなく、ただの再実行になる
+function retryable(s) {
+  return s.number != null && ['error', 'aborted', 'incomplete'].includes(s.state);
+}
+
+async function retryTask(number) {
+  try {
+    status = await api('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ retry: Number(number) }),
+    });
+    render(); renderRuns();
+    note(`#${number} を再実行します`, 'ok');
+  } catch (e) { note(e.message, 'err'); }
 }
 
 async function showRaw(id, which) {
