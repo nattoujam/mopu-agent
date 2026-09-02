@@ -333,7 +333,9 @@ def task_summary(path):
         summary["result"] = (obj.get("result") or "")[:400]
         break
     else:
-        summary["state"] = "incomplete"
+        # stream.jsonl が無いのはエージェントを起動する前に打ち切られたとき
+        # （依存の準備の失敗、worktree の準備の失敗）
+        summary["state"] = "incomplete" if stream.exists() else "aborted"
     _task_cache[path.name] = (key, summary)
     return summary
 
@@ -467,6 +469,7 @@ def task_detail(path):
         "summary": task_summary(path),
         "events": events[-300:],
         "stderr": read_text(path / "stderr.log", limit=64 * 1024),
+        "setup": read_text(path / "setup.log", limit=64 * 1024),
     }
 
 
@@ -531,6 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "stream": read_text(target / "stream.jsonl", 2 * 1024 * 1024),
                         "stderr": read_text(target / "stderr.log", 256 * 1024),
+                        "setup": read_text(target / "setup.log", 256 * 1024),
                     }
                 )
             try:

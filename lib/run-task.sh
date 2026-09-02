@@ -368,10 +368,11 @@ run_task() {
     run_setup "$wt" "$setup_log" || setup_rc=$?
     if (( setup_rc )); then
       err "[$task_id] 依存の準備に失敗しました (exit=$setup_rc)"
+      [[ -s $setup_log ]] && warn "$(tail -20 "$setup_log")"
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf '依存の準備コマンドが失敗しました (exit=%s%s)。\n\n```\n%s\n```\n\n```\n%s\n```\n\nログ: `%s`' \
         "$setup_rc" "$( (( setup_rc == 124 )) && printf ': %s で打ち切り' "$SETUP_TIMEOUT" )" \
-        "$SETUP_CMD" "$(tail -20 "$setup_log")" "$(agent_relpath "$log_dir")")"
+        "$SETUP_CMD" "$(tail -20 "$setup_log")" "$(agent_relpath "$setup_log")")"
       log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
       return 1
     fi

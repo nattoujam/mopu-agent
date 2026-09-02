@@ -439,8 +439,7 @@ async function loadTasks() {
     return;
   }
   const html = tasks.map((t) => {
-    const cls = t.state === 'success' ? 'ok' : t.state === 'error' ? 'err' : '';
-    const label = t.state === 'success' ? '成功' : t.state === 'error' ? '失敗' : '未完了';
+    const [cls, label] = { success: ['ok', '成功'], error: ['err', '失敗'], aborted: ['err', '中止'] }[t.state] || ['', '未完了'];
     const cost = t.cost_usd != null ? `<span class="badge">$${t.cost_usd.toFixed(4)}</span>` : '';
     return `<div class="item ${selected && selected.kind === 'task' && selected.id === t.id ? 'selected' : ''}" data-task="${esc(t.id)}">
       <span class="when">${fmtTime(t.started_at)}</span>
@@ -490,6 +489,7 @@ async function openTask(id) {
       <span class="hint">${esc(meta)}</span>
       <button data-raw="stream">生ログ (stream.jsonl)</button>
       <button data-raw="stderr" ${data.stderr.trim() ? '' : 'disabled'}>stderr</button>
+      <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
     </div>
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {
@@ -532,7 +532,7 @@ async function showRaw(id, which) {
   let data;
   try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw`); }
   catch (e) { note(e.message, 'err'); return; }
-  const file = which === 'stderr' ? 'stderr.log' : 'stream.jsonl';
+  const file = { stderr: 'stderr.log', setup: 'setup.log' }[which] || 'stream.jsonl';
   openModal(`${id}/${file}`, data[which] || '(空)');
 }
 

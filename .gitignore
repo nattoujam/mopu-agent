@@ -5,3 +5,4 @@ logs/
 state/
 APP_PRIVATE_KEY
 *.pem
+__pycache__/
