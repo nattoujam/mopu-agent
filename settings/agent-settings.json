@@ -60,5 +60,8 @@
   },
   "sandbox": {
     "enabled": false
+  },
+  "attribution": {
+    "sessionUrl": false
   }
 }
