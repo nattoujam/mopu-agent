@@ -131,8 +131,13 @@ button.primary { background: rgba(110,168,254,.14); border-color: rgba(110,168,2
   font-size: 13px;
 }
 .item:last-child { border-bottom: none; }
+.item.group { color: var(--muted); }
+/* :hover と .selected は詳細度が同じなので、地の色はそれより前に置いて後勝ちさせる */
+.item.child { padding-left: 28px; background: rgba(0,0,0,.16); }
 .item:hover { background: var(--panel-2); }
 .item.selected { background: rgba(110,168,254,.1); }
+.item .caret { color: var(--muted); font-size: 10px; width: 8px; text-align: center; }
+.item .span { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: 8px; }
 .item .when { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .item .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge {
@@ -298,6 +303,7 @@ const PRESETS = [['1分','1m'],['5分','5m'],['15分','15m'],['30分','30m'],['1
 const $ = (id) => document.getElementById(id);
 let status = null, offset = 0, tab = 'runs', selected = null, tasks = [], intervalDirty = false;
 let listSig = null;
+const idleOpen = new Set();
 
 function paintList(sig, html, bind) {
   if (sig === listSig) return;
@@ -322,6 +328,12 @@ function fmtTime(epoch) {
   const d = new Date(epoch * 1000);
   const pad = (n) => String(n).padStart(2, '0');
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function fmtClock(epoch) {
+  if (!epoch) return '—';
+  const d = new Date(epoch * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 function esc(s) {
   return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -409,27 +421,91 @@ function runBadge(run) {
   return `<span class="badge err">exit ${run.exit_code}</span>`;
 }
 
+// 何も起きなかった実行。ポーリング間隔によっては履歴がこれで埋まり、
+// タスクを処理した実行が押し出されるので、連続ぶんは 1 行に畳む
+function isIdleRun(run) {
+  return run.exit_code === 0 && !run.detected && !run.processed && !run.warnings && !run.errors;
+}
+
+function groupRuns(runs) {
+  const groups = [];
+  for (const run of runs) {
+    const last = groups[groups.length - 1];
+    if (isIdleRun(run) && last && last.idle) last.runs.push(run);
+    else groups.push({ idle: isIdleRun(run), runs: [run] });
+  }
+  return groups;
+}
+
+// 識別子は最古の実行。最新側は「タスクなし」が増えるたびに入れ替わるので、
+// キーにすると開閉状態がポーリングのたびに失われる
+function groupKey(group) {
+  return group.runs[group.runs.length - 1].log;
+}
+
+function collapsedGroups() {
+  return groupRuns(status.scheduler.runs).filter((g) => g.idle && g.runs.length > 1);
+}
+
+// 選択したログの行が畳まれた中に隠れたままにならないよう開く。開閉の状態は
+// idleOpen だけが持ち、描画側で上書きしない（畳み直せなくなるため）
+function revealRun(id) {
+  for (const group of collapsedGroups()) {
+    if (group.runs.some((r) => r.log === id)) idleOpen.add(groupKey(group));
+  }
+}
+
+function isSelectedRun(id) {
+  return !!(selected && selected.kind === 'run' && selected.id === id);
+}
+
+function runRow(id, when, label, badges, child) {
+  return `<div class="item${isSelectedRun(id) ? ' selected' : ''}${child ? ' child' : ''}" data-run="${esc(id)}">
+      <span class="when">${fmtTime(when)}</span>
+      <span class="title">${label}</span>${badges}
+    </div>`;
+}
+
 function renderRuns() {
   const sc = status.scheduler;
   const rows = [];
   if (sc.current) {
-    rows.push({ id: sc.current.log, when: sc.current.started_at, html: '<span class="badge run">実行中</span>', label: triggerLabel(sc.current) });
+    rows.push(runRow(sc.current.log, sc.current.started_at, triggerLabel(sc.current), '<span class="badge run">実行中</span>'));
   }
-  for (const run of sc.runs) {
-    rows.push({ id: run.log, when: run.started_at, html: runBadge(run) + `<span class="badge">${run.duration_s}s</span>`, label: triggerLabel(run) });
+  for (const group of groupRuns(sc.runs)) {
+    const key = groupKey(group);
+    const open = idleOpen.has(key);
+    if (group.idle && group.runs.length > 1) {
+      const oldest = group.runs[group.runs.length - 1];
+      const holdsSelected = !open && group.runs.some((r) => isSelectedRun(r.log));
+      rows.push(`<div class="item group${holdsSelected ? ' selected' : ''}" data-group="${esc(key)}">
+          <span class="caret">${open ? '▼' : '▶'}</span>
+          <span class="when">${fmtTime(group.runs[0].started_at)}</span>
+          <span class="title">タスクなし<span class="span">${fmtClock(oldest.started_at)} 〜 ${fmtClock(group.runs[0].started_at)}</span></span>
+          <span class="badge">×${group.runs.length}</span>
+        </div>`);
+      if (!open) continue;
+    }
+    for (const run of group.runs) {
+      const badges = runBadge(run) + `<span class="badge">${run.duration_s}s</span>`;
+      rows.push(runRow(run.log, run.started_at, triggerLabel(run), badges, group.idle && group.runs.length > 1));
+    }
   }
   if (!rows.length) {
     paintList('runs:empty', '<div class="empty">まだ実行されていません</div>', () => {});
     return;
   }
-  const html = rows.map((r) => `
-    <div class="item ${selected && selected.kind === 'run' && selected.id === r.id ? 'selected' : ''}" data-run="${esc(r.id)}">
-      <span class="when">${fmtTime(r.when)}</span>
-      <span class="title">${r.label}</span>${r.html}
-    </div>`).join('');
+  const html = rows.join('');
   paintList('runs:' + html, html, () => {
     $('list').querySelectorAll('[data-run]').forEach((el) => {
       el.onclick = () => openRun(el.dataset.run);
+    });
+    $('list').querySelectorAll('[data-group]').forEach((el) => {
+      el.onclick = () => {
+        const key = el.dataset.group;
+        if (idleOpen.has(key)) idleOpen.delete(key); else idleOpen.add(key);
+        renderRuns();
+      };
     });
   });
 }
@@ -472,7 +548,7 @@ async function openRun(name, keepScroll) {
   pane.innerHTML = `<pre class="log">${body || '(出力なし)'}</pre>`;
   const el = pane.querySelector('pre.log');
   el.scrollTop = keepScroll && !atBottom ? scroll : el.scrollHeight;
-  if (!keepScroll) renderRuns();
+  if (!keepScroll) { revealRun(name); renderRuns(); }
 }
 
 async function openTask(id) {

@@ -187,7 +187,7 @@ class Scheduler:
                 "interval_seconds": self.interval,
                 "next_run_at": self.next_run_at,
                 "current": dict(self.current) if self.current else None,
-                "runs": [dict(r) for r in self.runs[:50]],
+                "runs": [dict(r) for r in self.runs[:RUNS_KEEP]],
             }
 
     def update(self, interval=None, enabled=None):
