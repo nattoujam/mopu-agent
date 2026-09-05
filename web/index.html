@@ -421,10 +421,11 @@ function runBadge(run) {
   return `<span class="badge err">exit ${run.exit_code}</span>`;
 }
 
-// 何も起きなかった実行。ポーリング間隔によっては履歴がこれで埋まり、
-// タスクを処理した実行が押し出されるので、連続ぶんは 1 行に畳む
+// 何も処理しなかった実行（検出だけしてスキップした場合も含む）。ポーリング
+// 間隔によっては履歴がこれで埋まり、タスクを処理した実行が押し出されるので、
+// 連続ぶんは 1 行に畳む
 function isIdleRun(run) {
-  return run.exit_code === 0 && !run.detected && !run.processed && !run.warnings && !run.errors;
+  return run.exit_code === 0 && !run.processed && !run.warnings && !run.errors;
 }
 
 function groupRuns(runs) {

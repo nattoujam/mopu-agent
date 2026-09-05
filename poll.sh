@@ -150,17 +150,17 @@ while IFS= read -r t; do
 
   number=$(jq -r '.number' <<<"$t")
   if blocking=$(sub_issue_deps "$t"); then
-    warn "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
+    log "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
     continue
   fi
   if in_flight_blocked "$number"; then
-    warn "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
+    log "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
     continue
   fi
 
   # タスクごとに枠を確認し、連続処理で閾値を跨がないようにする
   if ! gate; then
-    warn "利用枠のため以降のタスクを中止します"
+    log "利用枠のため以降のタスクを中止します"
     break
   fi
 
