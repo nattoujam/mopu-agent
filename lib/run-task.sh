@@ -565,8 +565,10 @@ run_task() {
   LAST_TASK_OPENED_PR=1
 
   set_labels "$number" "$LABEL_DONE"
-  post_report "$(printf '%s\n\n**PR**: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
-    "$result" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")"
+  # 変更内容の説明は PR 本文（$result）にだけ書かせる。Issue 側に同じ説明を
+  # 重複させると、レビュワーは同じ内容を二度読むことになる
+  post_report "$(printf 'PR を作成しました: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
+    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
