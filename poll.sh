@@ -137,10 +137,15 @@ fi
 
 # --- 実行 ---
 processed=0
+# 上限/レート制限/利用枠で打ち切ると、コメント由来のタスクは last-poll 更新後の
+# since 窓から外れて二度と検出されなくなる（issue はラベル基準で毎回全件取得する
+# ため影響しない）。打ち切った回は last-poll を更新せず、次回も同じ since から
+# 再走査させて取りこぼしを防ぐ
+INCOMPLETE_RUN=0
 while IFS= read -r t; do
   [[ -n $t ]] || continue
-  (( processed >= MAX_TASKS_PER_RUN )) && { log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達しました"; break; }
-  (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; break; }
+  (( processed >= MAX_TASKS_PER_RUN )) && { log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達しました"; INCOMPLETE_RUN=1; break; }
+  (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; INCOMPLETE_RUN=1; break; }
 
   actor=$(jq -r '.actor' <<<"$t")
   if ! is_allowed_actor "$actor"; then
@@ -161,6 +166,7 @@ while IFS= read -r t; do
   # タスクごとに枠を確認し、連続処理で閾値を跨がないようにする
   if ! gate; then
     log "利用枠のため以降のタスクを中止します"
+    INCOMPLETE_RUN=1
     break
   fi
 
@@ -182,5 +188,9 @@ while IFS= read -r t; do
   (( processed++ ))
 done <<<"$tasks"
 
-date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/last-poll"
+if (( INCOMPLETE_RUN )); then
+  log "未処理のタスクが残っているため last-poll は更新しません（次回も同じ範囲を再走査します）"
+else
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/last-poll"
+fi
 log "完了: $processed 件を処理しました"
