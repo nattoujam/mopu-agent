@@ -291,7 +291,7 @@ invoke_agent() {
   fi
 
   (
-    cd "$task_dir" || exit 1
+    cd "$task_dir/repo" || exit 1
     # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB は使わない。これを立てると sandbox の
     # filesystem isolation が強制的に維持され、sandbox.enabled=false でも
     # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
@@ -394,7 +394,10 @@ run_task() {
 
 この Issue は既に分解されたタスクの一部です。これ以上分解せず、そのまま実装すること。"
   else
-    sys_prompt+=$'\n\n'"$(sed "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" "$AGENT_DIR/prompts/decompose.md")"
+    # 計画ファイルはリポジトリの外に置く。エージェントはリポジトリ直下で動くため
+    # 相対パスだと書き先を間違えやすく、外したことに気づけないまま分解が失われる
+    sys_prompt+=$'\n\n'"$(sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" \
+      -e "s|%%PLAN_FILE%%|$plan_file|g" "$AGENT_DIR/prompts/decompose.md")"
   fi
 
   local prompt
@@ -416,11 +419,21 @@ run_task() {
   deny_json=$(printf '%s\n' "${secret_paths[@]}" \
     | jq -R 'sub("^/";"") | "Read(//\(.))", "Read(//\(.)/**)"' | jq -sc .)
 
+  # エージェントはリポジトリ直下で起動するので git は素の形で書けるが、作業
+  # ディレクトリの絶対パスを知っているため "git -C <絶対パス> status" も書く。
+  # ルールは最初の * までを文字どおり照合するので、この形は個別に持つしかない。
+  # "Bash(git:*)" 一本にはできない（* がサブコマンドの位置に来ると git -c で
+  # 任意のプログラムを起動でき、curl や gh の deny を迂回される）
   jq --arg wt "$task_dir" --argjson extra "$extra_json" --argjson deny "$deny_json" \
-    '.permissions.allow = (
+    'def dir_form:
+       map(select(startswith("Bash(git ")))
+       | map(sub("^Bash\\(git "; "Bash(git -C \($wt)/repo "));
+     .permissions.allow as $allow
+     | .permissions.deny as $deny_base
+     | .permissions.allow = (
         ["Read(//\($wt)/**)", "Edit(//\($wt)/**)"]
-        + $extra + .permissions.allow)
-     | .permissions.deny = ($deny + .permissions.deny)' \
+        + $extra + $allow + ($allow | dir_form))
+     | .permissions.deny = ($deny + $deny_base + ($deny_base | dir_form))' \
     "$AGENT_DIR/settings/agent-settings.json" > "$settings" || return 1
 
   # 既存ブランチを引き継いだ場合、既にあるコミットを「今回の成果」と誤認しないよう
