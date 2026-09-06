@@ -9,39 +9,75 @@ post_comment() {
 
 # 報告の宛先。タスクの番号は元 Issue に読み替えるが、報告まで Issue 側へ流すと
 # PR で受けた指示とその結果が別のページに分かれてしまうため、指示が来た
-# コメントと同じ場所に返す
+# コメントと同じ場所に返す。複数のコメントを畳んだタスクでは最後のコメントを
+# 代表とし、失敗の報告と PR のまとめだけをそこへ返す
 REPLY_KIND=issue
 REPLY_NUMBER=""
 REPLY_COMMENT_ID=""
 
 set_reply_target() {
-  local number="$1" task="${2:-}" rn
+  local number="$1" task="${2:-}" last
   REPLY_KIND=issue
   REPLY_NUMBER="$number"
   REPLY_COMMENT_ID=""
 
   [[ -n $task ]] || return 0
-  rn=$(jq -r '.reply_number // empty' <<<"$task" 2>/dev/null)
-  [[ -n $rn ]] || return 0
+  last=$(jq -c '(.comments // []) | last // empty' <<<"$task" 2>/dev/null)
+  [[ -n $last ]] || return 0
 
-  REPLY_NUMBER="$rn"
-  REPLY_KIND=$(jq -r '.reply_kind // "issue"' <<<"$task")
-  REPLY_COMMENT_ID=$(jq -r '.comment_id // ""' <<<"$task")
+  REPLY_NUMBER=$(jq -r '.reply_number' <<<"$last")
+  REPLY_KIND=$(jq -r '.reply_kind // "issue"' <<<"$last")
+  REPLY_COMMENT_ID=$(jq -r '.id // ""' <<<"$last")
 }
 
 # PR のレビューコメントは専用エンドポイントを使わないと同じスレッドに入らない。
 # 会話タブのコメントには返信スレッドがないので、通常のコメントで返す
 post_report() {
-  local body="$1"
-  if [[ $REPLY_KIND == review && -n $REPLY_COMMENT_ID ]]; then
-    if gh api -X POST "repos/$REPO/pulls/$REPLY_NUMBER/comments/$REPLY_COMMENT_ID/replies" \
+  local body="$1" kind="${2:-$REPLY_KIND}" number="${3:-$REPLY_NUMBER}" cid="${4:-$REPLY_COMMENT_ID}"
+  if [[ $kind == review && -n $cid ]]; then
+    if gh api -X POST "repos/$REPO/pulls/$number/comments/$cid/replies" \
       -f "body=$(printf '%s\n\n%s\n' "$COMMENT_MARKER" "$body")" >/dev/null 2>&1
     then
       return 0
     fi
-    warn "レビューコメント $REPLY_COMMENT_ID への返信に失敗しました。#$REPLY_NUMBER にコメントします"
+    warn "レビューコメント $cid への返信に失敗しました。#$number にコメントします"
   fi
-  post_comment "$REPLY_NUMBER" "$body"
+  post_comment "$number" "$body"
+}
+
+join_report() {
+  local body="$1" summary="$2"
+  [[ -n $body && -n $summary ]] && body+=$'\n\n---\n\n'
+  printf '%s%s' "$body" "$summary"
+}
+
+REPLIES_FILE_NAME='.mopu-agent-replies.json'
+
+# コメントごとの返信を、それが投稿されたスレッドへ返す。エージェントが書かなかった
+# ID は最終メッセージで埋める。PR リンクなどのまとめは繰り返しても意味がないので、
+# 代表（最後のコメント）にだけ付ける
+post_replies() {
+  local task="$1" replies="$2" fallback="$3" summary="$4"
+  local n i id kind number reply
+  n=$(jq '(.comments // []) | length' <<<"$task" 2>/dev/null)
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+
+  if (( n == 0 )); then
+    post_report "$(join_report "$fallback" "$summary")"
+    return 0
+  fi
+
+  for (( i = 0; i < n; i++ )); do
+    id=$(jq -r ".comments[$i].id" <<<"$task")
+    kind=$(jq -r ".comments[$i].reply_kind" <<<"$task")
+    number=$(jq -r ".comments[$i].reply_number" <<<"$task")
+    reply=""
+    [[ -f $replies ]] && reply=$(jq -r --arg id "$id" '.replies[$id] // empty' "$replies" 2>/dev/null)
+    [[ -n $reply ]] || reply="$fallback"
+    (( i == n - 1 )) && reply=$(join_report "$reply" "$summary")
+    [[ -n $reply ]] || continue
+    post_report "$reply" "$kind" "$number" "$id"
+  done
 }
 
 # 付いていないラベルの削除は gh がエラーにするため、追加と削除を分けて実行する
@@ -188,7 +224,17 @@ load_leftover_task() {
   local dir
   dir=$(find_leftover_task "$1")
   [[ -n $dir ]] || return 1
-  jq -ec 'del(.commit)' "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
+  # comments を持たない古い控えは、指示が落ちないよう 1 件の配列に寄せる
+  jq -ec 'del(.commit)
+    | if (.comments | type) == "array" then .
+      else
+        .comments = (if (.comment_id // "") == "" then []
+                     else [{id: .comment_id, actor: .actor, instruction: (.comment // ""),
+                            reply_kind: (.reply_kind // "issue"),
+                            reply_number: (.reply_number // .number), url: ""}]
+                     end)
+        | del(.comment, .comment_id, .reply_kind, .reply_number)
+      end' "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
 }
 
 # タスクの会話 ID を Issue 番号ごとに控える。--retry の再開と、PR コメントへの
@@ -250,17 +296,31 @@ build_retry_context() {
 }
 
 build_prompt() {
-  local kind="$1" number="$2" title="$3" body="$4" comment="$5"
+  local kind="$1" number="$2" title="$3" body="$4" task="${5:-}"
   {
     echo "# タスク"
     echo
     if [[ $kind == comment ]]; then
-      echo "GitHub の #$number に次のコメントが投稿されました。この指示に対応してください。"
+      local n i id url instruction
+      n=$(jq '(.comments // []) | length' <<<"$task" 2>/dev/null)
+      [[ $n =~ ^[0-9]+$ ]] || n=0
+      if (( n > 1 )); then
+        echo "GitHub の #$number に次の $n 件のコメントが投稿されました。**そのすべて**に対応してください。"
+      else
+        echo "GitHub の #$number に次のコメントが投稿されました。この指示に対応してください。"
+      fi
       echo
-      echo '```'
-      printf '%s\n' "$comment"
-      echo '```'
-      echo
+      for (( i = 0; i < n; i++ )); do
+        id=$(jq -r ".comments[$i].id" <<<"$task")
+        url=$(jq -r ".comments[$i].url // \"\"" <<<"$task")
+        instruction=$(jq -r ".comments[$i].instruction" <<<"$task")
+        printf '### コメント %s\n\n' "$id"
+        [[ -n $url ]] && printf '%s\n\n' "$url"
+        echo '```'
+        printf '%s\n' "$instruction"
+        echo '```'
+        echo
+      done
       echo "## 背景: #$number「$title」の本文"
     else
       echo "GitHub Issue #$number「$title」に対応してください。"
@@ -309,9 +369,10 @@ invoke_agent() {
   ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
 }
 
-# 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文> <コメント本文>
+# 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文>
+# コメントの内容と返信先は CURRENT_TASK_JSON の comments から読む
 run_task() {
-  local kind="$1" number="$2" title="$3" body="$4" comment="${5:-}"
+  local kind="$1" number="$2" title="$3" body="$4"
   local task_id
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
   set_reply_target "$number" "${CURRENT_TASK_JSON:-}"
@@ -332,6 +393,9 @@ run_task() {
 
   local wt="$task_dir/repo"
   local plan_file="$task_dir/$PLAN_FILE_NAME"
+  local replies_file="$task_dir/$REPLIES_FILE_NAME"
+  # --retry で引き継いだ作業ツリーには前回の返信が残っている
+  rm -f "$replies_file"
   local log_dir="$AGENT_DIR/logs/$task_id"
   mkdir -p "$log_dir"
   [[ -n ${CURRENT_TASK_JSON:-} ]] \
@@ -380,7 +444,7 @@ run_task() {
 
   local sys_prompt no_decompose=0
   sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
-  [[ $kind == comment ]] && sys_prompt+=$'\n\n'$(cat "$AGENT_DIR/prompts/command.md")
+  [[ $kind == comment ]] && sys_prompt+=$'\n\n'"$(sed "s|%%REPLIES_FILE%%|$replies_file|g" "$AGENT_DIR/prompts/command.md")"
 
   # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
   if [[ -n $prev_dir ]]; then
@@ -401,7 +465,7 @@ run_task() {
   fi
 
   local prompt
-  prompt=$(build_prompt "$kind" "$number" "$title" "$body" "$comment")
+  prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
   [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
 
   # Read/Edit のパス制限は worktree の絶対パスでしか正しく効かないため、
@@ -537,7 +601,7 @@ run_task() {
 
     log "[$task_id] コード変更なし。結果のみコメントします"
     set_labels "$number" "$LABEL_DONE"
-    post_report "${result:-（応答なし）}"
+    post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
     record_spend "$task_id" "$cost" "$pct_before" ""
     remove_workspace "$task_dir"
     return 0
@@ -580,15 +644,13 @@ run_task() {
 
   set_labels "$number" "$LABEL_DONE"
   # 新規作成なら変更内容の説明は PR 本文（$result）に載る。既存 PR への追加
-  # コミットでは PR 本文が書き換わらないため、報告に含めないと応答が消える
-  post_report "$(
-    if (( pr_created )); then
-      printf 'PR を作成しました: %s\n\n' "$pr_url"
-    else
-      printf '%s\n\n---\n\nPR を更新しました: %s\n\n' "${result:-（応答なし）}" "$pr_url"
-    fi
-    printf '**コミット**:\n%s\n\n推定コスト: $%s' "$(commit_subjects "$wt" "$head_before")" "$cost"
-  )"
+  # コミットでは PR 本文が書き換わらないため、返信に含めないと応答が消える
+  local summary fallback=""
+  (( pr_created )) || fallback="${result:-（応答なし）}"
+  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
+    "$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )" \
+    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")
+  post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"

@@ -75,9 +75,12 @@ resolve_issue_number() {
 }
 
 # Issue/PR コメントと PR レビューコメントを走査する
-# {kind, number, title, body, actor, comment, comment_id, reply_kind, reply_number}
-# number は作業対象の Issue 番号、reply_* は報告の返信先（コメントが実際に
-# 置かれている Issue / PR とスレッド）を指す
+# {kind, number, title, body, actor, comments:[{id, actor, instruction, reply_kind, reply_number, url}]}
+# number は作業対象の Issue 番号、comments[].reply_* は返信先（コメントが実際に
+# 置かれている Issue / PR とスレッド）を指す。
+# 同じ作業対象へのコメントは 1 タスクに畳む。同じブランチを触る以上、別々の
+# セッションで順に処理しても後のセッションが前の変更を読み直すだけで、
+# 指示どうしの矛盾も見つけられない
 discover_comments() {
   # URL クエリでは "+09:00" の + が空白として解釈されるため UTC の Z 形式で渡す。
   # 取りこぼしを避けて 1 分さかのぼる（重複は seen-comments.txt で弾かれる）
@@ -99,9 +102,12 @@ discover_comments() {
 
   [[ -n $raw ]] || return 0
 
+  # PR 番号から Issue 番号への読み替えは API を叩くので、同じ PR では使い回す
+  local -A resolved=()
+  local hits=""
   while IFS= read -r row; do
     [[ -n $row ]] || continue
-    local id actor body number reply_kind reply_number
+    local id actor body reply_kind reply_number number
     id=$(jq -r '.id' <<<"$row")
     actor=$(jq -r '.actor' <<<"$row")
     body=$(jq -r '.body' <<<"$row")
@@ -114,18 +120,34 @@ discover_comments() {
 
     reply_number=$(jq -r '.issue_url' <<<"$row" | grep -oE '[0-9]+$')
     [[ -n $reply_number ]] || continue
-    number=$(resolve_issue_number "$reply_number")
+    number="${resolved[$reply_number]:-}"
+    if [[ -z $number ]]; then
+      number=$(resolve_issue_number "$reply_number")
+      resolved[$reply_number]="$number"
+    fi
 
-    local title
-    title=$(gh issue view "$number" -R "$REPO" --json title --jq .title 2>/dev/null) || continue
-
-    jq -nc --arg n "$number" --arg t "$title" \
-      --arg b "$(gh issue view "$number" -R "$REPO" --json body --jq .body 2>/dev/null)" \
-      --arg a "$actor" --arg c "$(extract_instruction "$body")" --arg id "$id" \
+    hits+=$(jq -nc --arg n "$number" --arg a "$actor" --arg id "$id" \
+      --arg c "$(extract_instruction "$body")" \
       --arg rk "$reply_kind" --arg rn "$reply_number" \
-      '{kind:"comment", number:($n|tonumber), title:$t, body:$b, actor:$a, comment:$c, comment_id:$id,
-        reply_kind:$rk, reply_number:($rn|tonumber)}'
+      --arg url "$(jq -r '.url' <<<"$row")" \
+      '{number:($n|tonumber), id:$id, actor:$a, instruction:$c,
+        reply_kind:$rk, reply_number:($rn|tonumber), url:$url}')$'\n'
   done <<<"$raw"
+
+  [[ -n $hits ]] || return 0
+
+  # Issue 本文とタイトルは畳んだあとに 1 回だけ引く
+  local grouped number title body
+  grouped=$(grep -v '^$' <<<"$hits" | jq -sc 'group_by(.number)[]')
+  while IFS= read -r g; do
+    [[ -n $g ]] || continue
+    number=$(jq -r '.[0].number' <<<"$g")
+    title=$(gh issue view "$number" -R "$REPO" --json title --jq .title 2>/dev/null) || continue
+    body=$(gh issue view "$number" -R "$REPO" --json body --jq .body 2>/dev/null)
+    jq -c --arg t "$title" --arg b "$body" \
+      '{kind:"comment", number:.[0].number, title:$t, body:$b, actor:.[0].actor,
+        comments: map({id, actor, instruction, reply_kind, reply_number, url})}' <<<"$g"
+  done <<<"$grouped"
 }
 
 # --retry は記録済みのコメントを再処理するため、追記の前に重複を弾く

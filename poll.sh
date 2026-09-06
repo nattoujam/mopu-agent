@@ -127,7 +127,10 @@ log "$(wc -l <<<"$tasks") 件のタスクを検出しました"
 
 if (( DRY_RUN )); then
   while IFS= read -r t; do
-    line=$(jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"' <<<"$t")
+    line=$(jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"
+                  + (if ((.comments // []) | length) > 1
+                     then "  ← コメント \(.comments | length) 件をまとめて処理"
+                     else "" end)' <<<"$t")
     if blocking=$(sub_issue_deps "$t"); then
       line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
     elif in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
@@ -182,18 +185,18 @@ while IFS= read -r t <&3; do
   kind=$(jq -r '.kind' <<<"$t")
   title=$(jq -r '.title' <<<"$t")
   body=$(jq -r '.body' <<<"$t")
-  comment=$(jq -r '.comment // ""' <<<"$t")
-  comment_id=$(jq -r '.comment_id // ""' <<<"$t")
 
   ensure_repo
   # shellcheck disable=SC2034  # run-task.sh が --retry 用の控えとして書き出す
   CURRENT_TASK_JSON="$t"
-  run_task "$kind" "$number" "$title" "$body" "$comment"
+  run_task "$kind" "$number" "$title" "$body"
   if (( LAST_TASK_OPENED_PR )); then
     OPEN_AGENT_BRANCHES+=("${BRANCH_PREFIX}${number}")
     (( OPEN_AGENT_PRS++ ))
   fi
-  mark_seen "$comment_id"
+  for comment_id in $(jq -r '(.comments // [])[].id' <<<"$t"); do
+    mark_seen "$comment_id"
+  done
   (( processed++ ))
 done 3<<<"$tasks"
 
