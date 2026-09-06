@@ -142,7 +142,10 @@ processed=0
 # ため影響しない）。打ち切った回は last-poll を更新せず、次回も同じ since から
 # 再走査させて取りこぼしを防ぐ
 INCOMPLETE_RUN=0
-while IFS= read -r t; do
+# claude は TTY でない標準入力を読み切る。タスクの行をそのまま fd 0 で回すと、
+# 最初に起動した claude（利用枠の確認を含む）が残りの行を食ってループが終わる。
+# コメント由来のタスクはそこで消え、last-poll が進んだあとは二度と検出されない
+while IFS= read -r t <&3; do
   [[ -n $t ]] || continue
   (( processed >= MAX_TASKS_PER_RUN )) && { log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達しました"; INCOMPLETE_RUN=1; break; }
   (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; INCOMPLETE_RUN=1; break; }
@@ -186,7 +189,7 @@ while IFS= read -r t; do
   fi
   mark_seen "$comment_id"
   (( processed++ ))
-done <<<"$tasks"
+done 3<<<"$tasks"
 
 if (( INCOMPLETE_RUN )); then
   log "未処理のタスクが残っているため last-poll は更新しません（次回も同じ範囲を再走査します）"

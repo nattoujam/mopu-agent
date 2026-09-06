@@ -7,7 +7,7 @@ fetch_usage() {
     --output-format json \
     --setting-sources '' \
     --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
-    --permission-mode dontAsk 2>/dev/null \
+    --permission-mode dontAsk </dev/null 2>/dev/null \
     | jq -r '.result // empty' 2>/dev/null
 }
 

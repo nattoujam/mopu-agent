@@ -305,7 +305,7 @@ invoke_agent() {
       --append-system-prompt "$sys_prompt" \
       --output-format stream-json --verbose \
       --model "$MODEL" \
-      --max-budget-usd "$MAX_TASK_BUDGET_USD"
+      --max-budget-usd "$MAX_TASK_BUDGET_USD" </dev/null
   ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
 }
 
