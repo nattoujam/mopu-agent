@@ -14,10 +14,10 @@ RATE_LIMIT="${FAKE_AGENT_RATE_LIMIT:-}"
 SLEEP="${FAKE_AGENT_SLEEP:-0}"
 SESSION_ID="${FAKE_AGENT_SESSION_ID:-00000000-0000-4000-8000-fa4ea9e00000}"
 
-# lib/common.sh の REPO_SUBDIR と同じ。cwd はタスクディレクトリで、その直下が worktree
-WORKTREE='repo'
-MARKER_FILE="$WORKTREE/mopu-agent-fake.md"
-PLAN_FILE='.mopu-agent-plan.json'
+# エージェントは worktree 直下で起動される
+MARKER_FILE='mopu-agent-fake.md'
+# plan だけは git status を汚さないよう worktree の外（タスクディレクトリ）へ置く
+PLAN_FILE='../.mopu-agent-plan.json'
 
 PROMPT=""
 RESUME_ID=""
@@ -60,8 +60,8 @@ write_marker() {
 }
 
 git_commit() {
-  git -C "$WORKTREE" add -A \
-    && git -C "$WORKTREE" commit --quiet -m "fake-agent: 検証用のダミー変更 ($MODE)"
+  git add -A \
+    && git commit --quiet -m "fake-agent: 検証用のダミー変更 ($MODE)"
 }
 
 write_plan() {
