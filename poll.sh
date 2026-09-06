@@ -96,6 +96,10 @@ in_flight_blocked() {
 # --- タスクの収集 ---
 init_seen_baseline
 tasks=""
+# last-poll には収集を始めた時刻を書く。終了時刻にすると、タスクの実行中
+# （実測 2〜6 分）に投稿されたコメントが次回の since 窓から外れて消える。
+# 窓が前回と重なっても、処理済みのコメントは seen-comments.txt が弾く
+POLL_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [[ -n $ONLY_TASK ]]; then
   if (( RETRY )) && tasks=$(load_leftover_task "$ONLY_TASK"); then
@@ -115,7 +119,7 @@ tasks=$(grep -v '^$' <<<"$tasks")
 
 if [[ -z $tasks ]]; then
   log "処理するタスクはありません"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/last-poll"
+  printf '%s\n' "$POLL_STARTED_AT" > "$STATE_DIR/last-poll"
   exit 0
 fi
 
@@ -163,6 +167,8 @@ while IFS= read -r t <&3; do
   fi
   if in_flight_blocked "$number"; then
     log "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
+    # ラベルは毎回引き直せるが、コメントは last-poll が進めば窓から外れて消える
+    [[ $(jq -r '.kind' <<<"$t") == comment ]] && INCOMPLETE_RUN=1
     continue
   fi
 
@@ -194,6 +200,6 @@ done 3<<<"$tasks"
 if (( INCOMPLETE_RUN )); then
   log "未処理のタスクが残っているため last-poll は更新しません（次回も同じ範囲を再走査します）"
 else
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/last-poll"
+  printf '%s\n' "$POLL_STARTED_AT" > "$STATE_DIR/last-poll"
 fi
 log "完了: $processed 件を処理しました"
