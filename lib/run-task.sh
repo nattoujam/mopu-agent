@@ -555,7 +555,7 @@ run_task() {
   fi
 
   # 既存 PR があれば作り直さず、追加コミットをそのまま反映させる
-  local pr_url pr_out
+  local pr_url pr_out pr_created=0
   pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
   if [[ -z $pr_url ]]; then
     if pr_out=$(gh pr create -R "$REPO" \
@@ -564,6 +564,7 @@ run_task() {
       --body "$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")" 2>&1)
     then
       pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
+      pr_created=1
       request_review "$task_id" "$branch"
     else
       err "[$task_id] PR の作成に失敗しました: $pr_out"
@@ -578,10 +579,16 @@ run_task() {
   LAST_TASK_OPENED_PR=1
 
   set_labels "$number" "$LABEL_DONE"
-  # 変更内容の説明は PR 本文（$result）にだけ書かせる。Issue 側に同じ説明を
-  # 重複させると、レビュワーは同じ内容を二度読むことになる
-  post_report "$(printf 'PR を作成しました: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
-    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")"
+  # 新規作成なら変更内容の説明は PR 本文（$result）に載る。既存 PR への追加
+  # コミットでは PR 本文が書き換わらないため、報告に含めないと応答が消える
+  post_report "$(
+    if (( pr_created )); then
+      printf 'PR を作成しました: %s\n\n' "$pr_url"
+    else
+      printf '%s\n\n---\n\nPR を更新しました: %s\n\n' "${result:-（応答なし）}" "$pr_url"
+    fi
+    printf '**コミット**:\n%s\n\n推定コスト: $%s' "$(commit_subjects "$wt" "$head_before")" "$cost"
+  )"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
