@@ -17,6 +17,7 @@ Issue に agent:queued ラベル ─┐                              ┌─▶ p
 - `claude`
 - `flock`
 - `timeout`
+- `node` — タスク検出（`lib/discover.ts`）用。バージョンは `.tool-versions` で固定。ビルドは不要
 - `python3` — Web コンソール用（標準ライブラリのみ。追加パッケージは不要）
 
 ## セットアップ

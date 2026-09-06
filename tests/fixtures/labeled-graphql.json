@@ -1,0 +1,12 @@
+{"data":{"repository":{"issues":{"nodes":[
+  {"number":30,"title":"あとから作られた親なしタスク","body":"本文30","author":{"login":"nattoujam"},"parent":null},
+  {"number":12,"title":"sub-issue 2 番目","body":"本文12","author":{"login":"nattoujam"},
+   "parent":{"number":9,"subIssues":{"nodes":[
+     {"number":11,"state":"CLOSED"},{"number":12,"state":"OPEN"},{"number":13,"state":"OPEN"}]}}},
+  {"number":13,"title":"sub-issue 3 番目","body":"本文13","author":{"login":"nattoujam"},
+   "parent":{"number":9,"subIssues":{"nodes":[
+     {"number":11,"state":"CLOSED"},{"number":12,"state":"OPEN"},{"number":13,"state":"OPEN"}]}}},
+  {"number":11,"title":"sub-issue 1 番目","body":"本文11","author":{"login":"nattoujam"},
+   "parent":{"number":9,"subIssues":{"nodes":[
+     {"number":11,"state":"CLOSED"},{"number":12,"state":"OPEN"},{"number":13,"state":"OPEN"}]}}}
+]}}}}

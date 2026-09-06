@@ -43,7 +43,8 @@ source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"
 source "$AGENT_DIR/lib/run-task.sh"
-source "$AGENT_DIR/lib/discover.sh"
+# タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
+discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
 
 exec 9>"$STATE_DIR/poll.lock"
 flock -n 9 || die "別の poll.sh が実行中です"
@@ -62,7 +63,7 @@ if [[ -n $ONLY_TASK ]] && (( MAX_OPEN_AGENT_PRS > 0 )); then
 fi
 
 OPEN_AGENT_BRANCHES=()
-mapfile -t OPEN_AGENT_BRANCHES < <(list_open_agent_branches)
+mapfile -t OPEN_AGENT_BRANCHES < <(discover open-branches)
 OPEN_AGENT_PRS=${#OPEN_AGENT_BRANCHES[@]}
 (( OPEN_AGENT_PRS )) && log "進行中の PR: $OPEN_AGENT_PRS 件 (${OPEN_AGENT_BRANCHES[*]})"
 
@@ -94,7 +95,7 @@ in_flight_blocked() {
 }
 
 # --- タスクの収集 ---
-init_seen_baseline
+discover init-baseline
 tasks=""
 # last-poll には収集を始めた時刻を書く。終了時刻にすると、タスクの実行中
 # （実測 2〜6 分）に投稿されたコメントが次回の since 窓から外れて消える。
@@ -110,8 +111,8 @@ if [[ -n $ONLY_TASK ]]; then
       || die "Issue #$ONLY_TASK を取得できませんでした"
   fi
 else
-  tasks=$(discover_labeled)
-  comments=$(discover_comments)
+  tasks=$(discover labeled)
+  comments=$(discover comments)
   [[ -n $comments ]] && tasks=$(printf '%s\n%s' "$tasks" "$comments")
 fi
 
@@ -195,7 +196,7 @@ while IFS= read -r t <&3; do
     (( OPEN_AGENT_PRS++ ))
   fi
   for comment_id in $(jq -r '(.comments // [])[].id' <<<"$t"); do
-    mark_seen "$comment_id"
+    discover mark-seen "$comment_id"
   done
   (( processed++ ))
 done 3<<<"$tasks"

@@ -42,7 +42,7 @@ Issue の作成やラベル操作は本物の GitHub を叩く。`REPO` には�
 lib/common.sh           設定読み込み・ログ・バリデーション
 lib/github-app.sh       GitHub App 認証（JWT → installation token）
 lib/budget.sh           利用枠ゲート（/usage のパース）
-lib/discover.sh         タスク検出（ラベル / コメント）
+lib/discover.ts         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
 tools/fake-agent        claude の代役スタブ（動作検証用）

@@ -1,0 +1,72 @@
+[
+ {
+  "id": 501,
+  "body": "/claude Issue に直接の指示",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/issues/7#c501",
+  "created_at": "2026-09-06T01:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/7"
+ },
+ {
+  "id": 502,
+  "body": "説明\n```\n/claude 例示なので拾わない\n```\n以上",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/issues/7#c502",
+  "created_at": "2026-09-06T02:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/7"
+ },
+ {
+  "id": 503,
+  "body": "/claude 第三者の指示",
+  "user": {
+   "login": "stranger"
+  },
+  "html_url": "https://github.com/o/r/issues/7#c503",
+  "created_at": "2026-09-06T03:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/7"
+ },
+ {
+  "id": 504,
+  "body": "<!-- mopu-agent -->\n/claude 自分の投稿",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/issues/7#c504",
+  "created_at": "2026-09-06T04:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/7"
+ },
+ {
+  "id": 505,
+  "body": "/claude PR コメントからの指示\n続きの行\n\n",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/pull/55#c505",
+  "created_at": "2026-09-06T05:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/55"
+ },
+ {
+  "id": 506,
+  "body": "ただの感想",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/issues/3#c506",
+  "created_at": "2026-09-06T06:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/3"
+ },
+ {
+  "id": 507,
+  "body": "余談\n\n/claude 末尾に空行が続く指示\n\n\n",
+  "user": {
+   "login": "nattoujam"
+  },
+  "html_url": "https://github.com/o/r/issues/3#c507",
+  "created_at": "2026-09-06T07:00:00Z",
+  "issue_url": "https://api.github.com/repos/o/r/issues/3"
+ }
+]

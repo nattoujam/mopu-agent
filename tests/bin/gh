@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# gh のスタブ。呼ばれ方で tests/fixtures の応答を返し、--jq が付いていれば適用する。
+# bash 版は --jq で整形し、TS 版は生 JSON を受け取るので、どちらからも使える
+args=("$@"); joined="$*"; jqexpr=""; num=""
+for ((i=0; i<${#args[@]}; i++)); do
+  [[ ${args[i]} == "--jq" ]] && jqexpr="${args[i+1]}"
+  [[ ${args[i]} == "view" ]] && num="${args[i+1]}"
+done
+
+case "$joined" in
+  *graphql*)           resp=$(cat "$FIXTURES/labeled-graphql.json") ;;
+  *"issues/comments"*) resp=$(cat "$FIXTURES/issue-comments.json") ;;
+  *"pulls/comments"*)  resp=$(cat "$FIXTURES/pull-comments.json") ;;
+  *"pr view"*)         resp=$(jq -c --arg n "$num" '.[$n] // empty' "$FIXTURES/pr-view.json")
+                       [[ -n $resp ]] || exit 1 ;;
+  *"issue view"*)      resp=$(jq -c --arg n "$num" '.[$n] // empty' "$FIXTURES/issue-view.json")
+                       [[ -n $resp ]] || exit 1 ;;
+  *) exit 1 ;;
+esac
+if [[ -n $jqexpr ]]; then printf '%s' "$resp" | jq -r "$jqexpr"; else printf '%s' "$resp"; fi

@@ -3,12 +3,12 @@
 AGENT_DIR="${AGENT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 export AGENT_DIR
 
-# shellcheck disable=SC2034  # discover.sh / run-task.sh で参照
+# shellcheck disable=SC2034  # discover.ts / run-task.sh で参照
 COMMENT_MARKER='<!-- mopu-agent -->'
 # 分解で作られた sub issue の目印。これが本文にある Issue は再分解させない
 # shellcheck disable=SC2034  # run-task.sh で参照
 SUB_ISSUE_MARKER='<!-- mopu-agent:sub-of'
-# shellcheck disable=SC2034  # run-task.sh / poll.sh で参照
+# shellcheck disable=SC2034  # discover.ts / run-task.sh / poll.sh で参照
 BRANCH_PREFIX='agent/issue-'
 # タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd は
 # タスク用ディレクトリなので、リポジトリはこの名前の相対パスで見える。
@@ -92,12 +92,14 @@ load_config() {
   SESSION_FILE="$STATE_DIR/sessions.json"
   mkdir -p "$STATE_DIR" "$AGENT_DIR/logs" "$AGENT_DIR/worktrees" "$AGENT_DIR/repos"
   touch "$SEEN_FILE" "$SPEND_FILE"
+  # discover.ts は設定を解釈せず、ここで確定した値を環境変数から受け取る
   export AGENT_COMMIT REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE SESSION_FILE
+  export REPO TRIGGER_COMMAND LABEL_QUEUED ALLOWED_ACTORS BRANCH_PREFIX COMMENT_MARKER
 }
 
 require_tools() {
   local missing=()
-  for t in gh jq git flock timeout; do
+  for t in gh jq git flock timeout node; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   (( ${#missing[@]} == 0 )) || die "必要なコマンドがありません: ${missing[*]}"
