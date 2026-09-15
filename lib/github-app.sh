@@ -101,8 +101,9 @@ setup_app_auth() {
     # 分解で作られた sub issue の author は bot 自身になるため、許可アクターに
     # 加えないと次のポーリングで弾かれる。bot 名義で Issue を作れるのは秘密鍵の
     # 持ち主だけなので、第三者の迂回には使えない。
-    # gh の author.login は "app/<slug>"、REST の user.login は "<slug>[bot]"
-    ALLOWED_ACTORS+=" app/${APP_BOT_NAME%\[bot\]} $APP_BOT_NAME"
+    # 3 つとも必要。GraphQL は "<slug>"、gh は "app/<slug>"、REST は "<slug>[bot]" を返す
+    local slug="${APP_BOT_NAME%\[bot\]}"
+    ALLOWED_ACTORS+=" $slug app/$slug $APP_BOT_NAME"
     log "GitHub App として動作します: $APP_BOT_NAME"
   else
     warn "App の bot 情報を取得できませんでした。コミット author は既定値になります"
