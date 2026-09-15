@@ -191,8 +191,43 @@ approve_plan_task() {
   set_labels "$number" "$LABEL_DONE"
   post_report "$(
     printf '**分解案を承認しました。作成した sub issue**:\n%s\n\n' "$created"
-    printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装されます。\n' "$LABEL_QUEUED"
+    printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装され、すべて閉じたらこの Issue も自動で閉じます。\n' "$LABEL_QUEUED"
   )"
   log "#$number 分解完了: $(wc -l <<<"$created") 件の sub issue を作成しました"
   return 0
+}
+
+# sub issue の PR は sub issue しか閉じないため、親はここで閉じる。
+# subIssuesSummary.completed は not planned の扱いが文書化されていないので state で数える
+COMPLETED_PARENTS_QUERY='
+  query($owner:String!, $name:String!, $label:String!) {
+    repository(owner:$owner, name:$name) {
+      issues(first:50, states:OPEN, labels:[$label]) {
+        nodes { number title subIssues(first:100) { nodes { number state } } }
+      }
+    }
+  }'
+
+close_completed_parents() {
+  local rows row number title subs
+  rows=$(gh api graphql -f "owner=${REPO%%/*}" -f "name=${REPO#*/}" -f "label=$LABEL_DONE"       -f "query=$COMPLETED_PARENTS_QUERY" 2>/dev/null     | jq -c '.data.repository.issues.nodes[]?
+        | select((.subIssues.nodes | length) > 0 and all(.subIssues.nodes[]; .state == "CLOSED"))
+        | {number, title, subs: [.subIssues.nodes[].number]}')
+  [[ -n $rows ]] || return 0
+
+  while IFS= read -r row; do
+    number=$(jq -r '.number' <<<"$row")
+    title=$(jq -r '.title' <<<"$row")
+    subs=$(jq -r '.subs | map("#\(.)") | join(", ")' <<<"$row")
+    if (( ${DRY_RUN:-0} )); then
+      log "sub issue ($subs) がすべて閉じているため閉じます（dry-run）: #$number $title"
+      continue
+    fi
+    if post_comment "$number" "sub issue ($subs) がすべて閉じたので、この Issue を閉じます。"       && gh issue close "$number" -R "$REPO" --reason completed >/dev/null 2>&1
+    then
+      log "sub issue ($subs) がすべて閉じたため閉じました: #$number $title"
+    else
+      warn "#$number を閉じられませんでした"
+    fi
+  done <<<"$rows"
 }

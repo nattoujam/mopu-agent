@@ -63,6 +63,8 @@ if [[ -n $ONLY_TASK ]] && (( MAX_OPEN_AGENT_PRS > 0 )); then
   MAX_OPEN_AGENT_PRS=0
 fi
 
+close_completed_parents
+
 OPEN_AGENT_BRANCHES=()
 mapfile -t OPEN_AGENT_BRANCHES < <(discover open-branches)
 OPEN_AGENT_PRS=${#OPEN_AGENT_BRANCHES[@]}

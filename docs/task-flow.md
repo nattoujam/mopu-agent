@@ -70,6 +70,10 @@ sub issue はこの時点では作らない。作ってしまうと `agent:queue
 - 承認で作成される sub issue には `agent:queued` が自動で付く。次回の poll から実装が走る
 - 件数は `MAX_SUB_ISSUES`（既定 5）で頭打ちにする
 - sub issue は REST の sub-issues API で親に紐付く（`sub_issue_id` は Issue の `number` ではなく `id`）
+- sub issue の PR は `Closes #<sub issue>` で sub issue しか閉じないので、親は `poll.sh` が毎回の
+  先頭で閉じる。`agent:done` の open な Issue のうち sub issue を 1 件以上持ち、そのすべてが
+  closed（理由は問わない）なら、コメントを付けて completed で閉じる。人間が後から足した
+  sub issue も数えるので、それが開いている間は親も開いたまま
 - 生成した sub issue の本文には `<!-- mopu-agent:sub-of #N -->` が入る。
   **このマーカーか REST の `parent_issue_url` を持つ Issue は再分解されない**（無限分解のガード）。
   後者があるので、手動で親に紐付けた Issue も対象になる
