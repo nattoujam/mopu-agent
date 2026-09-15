@@ -9,12 +9,6 @@ ensure_repo() {
   git -C "$REPO_DIR" fetch --quiet --prune origin || die "fetch に失敗しました"
 }
 
-# 依存の導入はエージェントではなくホスト側で、しかもエージェントが 1 バイトも
-# 書く前に済ませる。install はパッケージの postinstall やビルドスクリプトを
-# 走らせる＝任意コード実行なので、sandbox を切っているこの構成でエージェントに
-# 許すと permissions の deny ルールごと迂回される。
-# 実行順を先にしておけば、エージェントが依存を書き換えても同じタスク内では
-# インストールされない
 run_setup() {
   local wt="$1" out="$2"
   [[ -n $SETUP_CMD ]] || return 0
@@ -88,6 +82,14 @@ remove_workspace() {
   git -C "$REPO_DIR" worktree remove --force "$wt" 2>/dev/null
   git -C "$REPO_DIR" worktree prune
   rm -rf "$task_dir"
+}
+
+# 使い方: push_workspace <worktree> <ブランチ>
+push_workspace() {
+  local wt="$1" branch="$2"
+  local -a push_env=()
+  use_github_app && push_env=(env "GIT_ASKPASS=$(app_git_askpass)" "GH_TOKEN=$GH_TOKEN")
+  "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease
 }
 
 commit_subjects() {

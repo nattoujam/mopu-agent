@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# エージェントが workflow_dispatch を起動するための唯一の入口。sandbox の外
+# （excludedCommands）で動くので、引数は許可リストと形式で検証し、ref は
+# 親が export した MOPU_BRANCH に固定する
+set -euo pipefail
+
+usage() { echo "使い方: dispatch-workflow <workflow.yml> [key=value ...]" >&2; exit 2; }
+(( $# >= 1 )) || usage
+workflow="$1"; shift
+: "${MOPU_BRANCH:?}"
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+source "$AGENT_DIR/lib/github-app.sh"
+
+load_config >/dev/null 2>&1
+[[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
+
+allowed=0
+for w in "${DISPATCH_WORKFLOWS[@]}"; do
+  [[ $workflow == "$w" ]] && allowed=1
+done
+(( allowed )) || die "このワークフローは起動できません: $workflow（許可: ${DISPATCH_WORKFLOWS[*]:-なし}）"
+
+inputs=()
+for kv in "$@"; do
+  [[ $kv =~ ^[A-Za-z0-9_-]+=[[:print:]]*$ ]] || die "入力は key=value の形で指定してください: $kv"
+  inputs+=(-f "$kv")
+done
+
+if use_github_app; then
+  GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
+  export GH_TOKEN
+fi
+
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+gh workflow run "$workflow" -R "$REPO" --ref "$MOPU_BRANCH" "${inputs[@]}"
+
+# gh workflow run は run id を返さない。起動直後は一覧に現れないことがあるので少し待つ
+for _ in $(seq 1 10); do
+  sleep 3
+  run_id=$(gh run list -R "$REPO" --workflow "$workflow" --branch "$MOPU_BRANCH" \
+    --event workflow_dispatch --created ">=$since" --limit 1 --json databaseId --jq '.[0].databaseId')
+  [[ -n $run_id ]] && { echo "run: $run_id"; exit 0; }
+done
+echo "起動しましたが run id を特定できませんでした。gh run list --branch $MOPU_BRANCH で確認してください"

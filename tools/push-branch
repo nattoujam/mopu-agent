@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# エージェントが自分のブランチを push するための唯一の入口。sandbox の外
+# （excludedCommands）で動くので、引数も cwd も信用せず、親が export した
+# MOPU_TASK_DIR / MOPU_BRANCH だけを見る
+set -euo pipefail
+
+if (( $# )); then
+  echo "push-branch は引数を取りません" >&2
+  exit 2
+fi
+: "${MOPU_TASK_DIR:?}" "${MOPU_BRANCH:?}"
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+source "$AGENT_DIR/lib/github-app.sh"
+source "$AGENT_DIR/lib/workspace.sh"
+
+load_config >/dev/null 2>&1
+[[ $MOPU_TASK_DIR == "$AGENT_DIR/worktrees/"?* ]] || die "想定外のタスクディレクトリです"
+[[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
+
+wt=$(workspace_repo "$MOPU_TASK_DIR")
+if use_github_app; then
+  GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
+  export GH_TOKEN
+fi
+push_workspace "$wt" "$MOPU_BRANCH"
+echo "pushed: $MOPU_BRANCH"

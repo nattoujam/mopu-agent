@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# PreToolUse フック。push-branch / dispatch-workflow は excludedCommands なので、
+# `&&` で繋いだ後半や $(...) まで sandbox の外で走る。単独の素直な呼び出し以外を弾く
+set -euo pipefail
+
+tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+command=$(jq -r '.tool_input.command // ""')
+
+deny() {
+  jq -n --arg reason "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+}
+
+case $command in
+  *push-branch*)
+    [[ $command == "$tools/push-branch" ]] \
+      || deny "push-branch は引数なし・単独で実行すること: $tools/push-branch"
+    ;;
+  *dispatch-workflow*)
+    [[ $command =~ ^"$tools/dispatch-workflow"( [A-Za-z0-9_.=\'\"/-]+)+$ ]] \
+      || deny "dispatch-workflow は単独で、引数は <workflow.yml> [key=value ...] だけにすること: $tools/dispatch-workflow"
+    ;;
+esac

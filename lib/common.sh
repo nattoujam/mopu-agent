@@ -10,11 +10,8 @@ COMMENT_MARKER='<!-- mopu-agent -->'
 SUB_ISSUE_MARKER='<!-- mopu-agent:sub-of'
 # shellcheck disable=SC2034  # discover.ts / run-task.sh / poll.sh で参照
 BRANCH_PREFIX='agent/issue-'
-# タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd は
-# タスク用ディレクトリなので、リポジトリはこの名前の相対パスで見える。
-# settings/agent-settings.json の "Bash(git -C repo ...)" も同じ名前を指すので、
-# 変えるなら両方を直すこと
-# shellcheck disable=SC2034  # workspace.sh で参照
+# タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd はここ
+# shellcheck disable=SC2034  # workspace.sh / run-task.sh で参照
 REPO_SUBDIR='repo'
 
 log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -61,7 +58,7 @@ load_config() {
   : "${MAX_TASKS_PER_RUN:=3}"
   : "${MAX_SUB_ISSUES:=5}"
   : "${MAX_OPEN_AGENT_PRS:=1}"
-  declare -p EXTRA_ALLOWED_TOOLS >/dev/null 2>&1 || EXTRA_ALLOWED_TOOLS=()
+  declare -p DISPATCH_WORKFLOWS >/dev/null 2>&1 || DISPATCH_WORKFLOWS=()
   : "${SETUP_CMD:=}"
   : "${SETUP_TIMEOUT:=10m}"
 
@@ -99,11 +96,14 @@ load_config() {
 
 require_tools() {
   local missing=()
-  for t in gh jq git flock timeout node; do
+  for t in gh jq git flock timeout node bwrap socat; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   (( ${#missing[@]} == 0 )) || die "必要なコマンドがありません: ${missing[*]}"
   gh auth status >/dev/null 2>&1 || die "gh が未認証です。gh auth login を実行してください"
+  # failIfUnavailable にしてあるので、ここで落とさないとタスクごとに同じ失敗を繰り返す
+  bwrap --ro-bind / / --dev /dev --unshare-all true 2>/dev/null \
+    || die "bwrap がユーザー名前空間を作れません。docs/isolation.md の「前提」を参照してください"
 }
 
 is_allowed_actor() {

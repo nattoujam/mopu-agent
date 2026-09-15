@@ -48,6 +48,24 @@ app_token() {
   printf '%s' "$APP_TOKEN"
 }
 
+# 使い方: app_token_with '<permissions の JSON>'
+# エージェントに渡す用。App に付与されていない権限を要求すると 422 で失敗する
+app_token_with() {
+  local perms="$1" jwt install_id
+  jwt=$(app_jwt) || return 1
+  install_id=$(GH_TOKEN="" gh api -H "Authorization: Bearer $jwt" \
+    "repos/$REPO/installation" --jq '.id' 2>/dev/null)
+  [[ -n $install_id ]] || return 1
+  GH_TOKEN="" gh api -X POST -H "Authorization: Bearer $jwt" \
+    "app/installations/$install_id/access_tokens" \
+    --input <(printf '{"permissions":%s}' "$perms") --jq '.token' 2>/dev/null
+}
+
+# エージェントの gh に渡すトークン。CI の結果と artifact を読めれば足りるので
+# actions:read に絞る。write を渡すと workflow_dispatch でデプロイ系の
+# ワークフローまで起動できてしまう
+AGENT_TOKEN_PERMISSIONS='{"actions":"read","contents":"read","metadata":"read"}'
+
 # bot のコミット author 名義。App の bot ユーザー ID は変わらないので一度だけ引く
 APP_BOT_NAME="" APP_BOT_EMAIL=""
 

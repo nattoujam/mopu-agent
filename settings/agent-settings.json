@@ -1,34 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Glob",
-      "Grep",
-      "TodoWrite",
-      "Bash(cd:*)",
-      "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git show:*)",
-      "Bash(git add:*)",
-      "Bash(git rm:*)",
-      "Bash(git mv:*)",
-      "Bash(git commit:*)",
-      "Bash(git restore:*)",
-      "Bash(git checkout:*)",
-      "Bash(git stash:*)",
-      "Bash(git grep:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
-      "Bash(wc:*)",
-      "Bash(rg:*)",
-      "Bash(fd:*)",
-      "Bash(find:*)",
-      "Bash(mkdir:*)",
-      "Bash(cp:*)",
-      "Bash(mv:*)",
-      "Bash(touch:*)"
+      "WebFetch",
+      "WebSearch"
     ],
     "deny": [
       "Read(~/.ssh/**)",
@@ -37,19 +11,47 @@
       "Read(~/.claude/**)",
       "Bash(git push:*)",
       "Bash(git remote:*)",
-      "Bash(git config:*)",
-      "Bash(gh:*)",
-      "Bash(curl:*)",
-      "Bash(wget:*)",
-      "Bash(ssh:*)",
-      "Bash(sudo:*)",
-      "Bash(rm:*)",
-      "WebFetch",
-      "WebSearch"
+      "Bash(git config:*)"
     ]
   },
   "sandbox": {
-    "enabled": false
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "registry.npmjs.org",
+        "api.github.com",
+        "*.blob.core.windows.net"
+      ],
+      "strictAllowlist": true
+    },
+    "credentials": {
+      "files": [
+        {
+          "path": "~/.ssh",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.aws",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.config",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.claude",
+          "mode": "deny"
+        }
+      ],
+      "envVars": [
+        {
+          "name": "GITHUB_TOKEN",
+          "mode": "deny"
+        }
+      ]
+    }
   },
   "attribution": {
     "sessionUrl": false

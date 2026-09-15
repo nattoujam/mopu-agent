@@ -15,6 +15,7 @@ Issue に agent:queued ラベル ─┐                              ┌─▶ p
 - `jq`
 - `git`
 - `claude`
+- `bubblewrap` と `socat` — sandbox 用。Ubuntu 24.04 以降は AppArmor のプロファイルも要る（[実行環境と権限](docs/isolation.md)を参照）
 - `flock`
 - `timeout`
 - `node` — タスク検出（`lib/discover.ts`）用。バージョンは `.tool-versions` で固定。ビルドは不要
@@ -81,8 +82,9 @@ PR で指示した場合も、ブランチ・ラベル・sub issue は元 Issue 
 
 ## 制限
 
-- **ネットワークが遮断されているため、依存パッケージのインストールを伴うタスクは失敗する。**
-  その場合エージェントは変更を加えず、理由を Issue にコメントする。
+- エージェントは sandbox の中で動く。書き込みは作業ディレクトリだけ、Bash からの通信は
+  パッケージレジストリと GitHub API だけで、`docker` は使えない。docker が要る検証はブランチを
+  push して CI に任せる。詳細は[実行環境と権限](docs/isolation.md)。
 - `poll.sh` 単体では自動起動しない（利用枠を張り付かせないため）。定期実行するなら
   [Web コンソール](docs/console.md)（`./console.sh`）を使う。間隔は控えめにすること。
 

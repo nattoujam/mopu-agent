@@ -334,9 +334,49 @@ build_prompt() {
   } | head -c 60000
 }
 
-# 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <プロンプト> <システムプロンプト> <設定ファイル> [再開する会話 ID]
+# 使い方: build_agent_settings <タスクディレクトリ> <出力ファイル>
+# パス制限は絶対パスでしか正しく効かないため、タスクごとに生成する
+# （"//" が絶対パスのプレフィックス）。Write ルールは Claude Code が参照しない
+# （書き込み系は Edit がカバーする）
+build_agent_settings() {
+  local task_dir="$1" out="$2"
+  local wt="$task_dir/$REPO_SUBDIR"
+
+  # permissions の Read は Read ツールに、sandbox の denyRead は Bash にしか効かない
+  local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state")
+  use_github_app && secret_paths+=("$APP_PRIVATE_KEY")
+  local secrets_json
+  secrets_json=$(printf '%s\n' "${secret_paths[@]}" | jq -R . | jq -sc .)
+  local tools="$AGENT_DIR/tools"
+
+  # worktree のコミットは共有の .git（repos/<slug>/.git）へ書くので、そこだけ
+  # 書き込みを開ける。ただし hooks と config はホストが後で git push を実行する
+  # ときに読まれる＝任意コード実行の経路なので閉じる。worktree 側の .git は
+  # gitdir を指すただのファイルで、書き換えると別の hooks を差し込めるため同様に閉じる
+  jq --arg wt "$wt" --arg task_dir "$task_dir" --arg repo_git "$REPO_DIR/.git" \
+     --argjson secrets "$secrets_json" --arg tools "$tools" \
+    'def abs: sub("^/"; "//");
+     ["\($tools)/push-branch", "\($tools)/dispatch-workflow *"] as $host_cmds
+     | .permissions.allow = (
+        ["Read(\($task_dir | abs)/**)", "Edit(\($task_dir | abs)/**)"]
+        + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
+     | .sandbox.excludedCommands = $host_cmds
+     | .hooks.PreToolUse = [{matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]}]
+     | .permissions.deny = (
+        ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
+        + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
+        + .permissions.deny)
+     | .sandbox.filesystem = {
+        allowWrite: [$task_dir, $repo_git],
+        denyWrite: ["\($wt)/.git", "\($repo_git)/hooks", "\($repo_git)/config"],
+        denyRead: $secrets
+       }' \
+    "$AGENT_DIR/settings/agent-settings.json" > "$out"
+}
+
+# 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <プロンプト> <システムプロンプト> <設定ファイル> <ブランチ> [再開する会話 ID]
 invoke_agent() {
-  local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" resume_id="${6:-}"
+  local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" branch="$6" resume_id="${7:-}"
   local -a resume_args=()
 
   # --fork-session で会話を分岐させる。元の会話をそのまま残せるので、再開した
@@ -351,15 +391,18 @@ invoke_agent() {
   fi
 
   (
-    cd "$task_dir/repo" || exit 1
-    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB は使わない。これを立てると sandbox の
-    # filesystem isolation が強制的に維持され、sandbox.enabled=false でも
-    # bwrap が起動する（このホストは AppArmor の userns 制限で必ず失敗する）。
-    # 子プロセスへ渡したくない認証情報は代わりにここで落とす
+    cd "$task_dir/$REPO_SUBDIR" || exit 1
+    # sandbox.credentials は Bash の子プロセスにしか効かない（WebFetch は本体側で動く）
     unset GH_TOKEN GITHUB_TOKEN
+    [[ -n ${AGENT_GH_TOKEN:-} ]] && export GH_TOKEN="$AGENT_GH_TOKEN"
+    export MOPU_TASK_DIR="$task_dir" MOPU_BRANCH="$branch"
+    # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュをタスク側に持たせる
+    export npm_config_cache="$task_dir/.npm-cache" XDG_CACHE_HOME="$task_dir/.cache"
+    # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
     timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
       "${resume_args[@]}" \
       --settings "$settings" \
+      --permission-mode dontAsk \
       --setting-sources '' \
       --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
       --append-system-prompt "$sys_prompt" \
@@ -444,6 +487,19 @@ run_task() {
 
   local sys_prompt no_decompose=0
   sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
+  AGENT_GH_TOKEN=""
+  if use_github_app; then
+    AGENT_GH_TOKEN=$(app_token_with "$AGENT_TOKEN_PERMISSIONS") \
+      || warn "[$task_id] エージェント用トークンを取得できません。App に Actions: Read を付与すると CI の結果を読めます"
+  fi
+  sys_prompt+=$'\n\n'"$(sed -e "s|%%PUSH_CMD%%|$AGENT_DIR/tools/push-branch|g" \
+    -e "s|%%BRANCH%%|$branch|g" "$AGENT_DIR/prompts/ci.md")"
+  if (( ${#DISPATCH_WORKFLOWS[@]} )); then
+    sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）は \`$AGENT_DIR/tools/dispatch-workflow <workflow.yml> [key=value ...]\` で行う。ブランチは自分のものに固定され、起動できるのは次だけ: $(printf '`%s` ' "${DISPATCH_WORKFLOWS[@]}")。先に push しておくこと。他のコマンドと繋がず単独で呼ぶ"
+  else
+    sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）はできない。push で起動するワークフローだけが使える"
+  fi
+  [[ -n $AGENT_GH_TOKEN ]] || sys_prompt+=$'\n\n'"この環境では \`gh\` は使えない（CI の結果は読めない）。push だけはできる。"
   [[ $kind == comment ]] && sys_prompt+=$'\n\n'"$(sed "s|%%REPLIES_FILE%%|$replies_file|g" "$AGENT_DIR/prompts/command.md")"
 
   # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
@@ -468,37 +524,8 @@ run_task() {
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
   [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
 
-  # Read/Edit のパス制限は worktree の絶対パスでしか正しく効かないため、
-  # 実行のたびに設定を生成する（"//" が絶対パスのプレフィックス）。
-  # Write ルールは Claude Code が参照しない（書き込み系は Edit がカバーする）
-  local settings="$log_dir/settings.json" extra_json='[]'
-  # 権限ルールは "Bash(npm test:*)" のように空白を含むため配列で受け取る
-  (( ${#EXTRA_ALLOWED_TOOLS[@]} )) && \
-    extra_json=$(printf '%s\n' "${EXTRA_ALLOWED_TOOLS[@]}" | jq -R . | jq -sc .)
-  # sandbox を切っているので、エージェント自身の設定・認証情報を守るのは
-  # この deny ルールだけになる
-  local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state")
-  use_github_app && secret_paths+=("$APP_PRIVATE_KEY")
-  local deny_json
-  deny_json=$(printf '%s\n' "${secret_paths[@]}" \
-    | jq -R 'sub("^/";"") | "Read(//\(.))", "Read(//\(.)/**)"' | jq -sc .)
-
-  # エージェントはリポジトリ直下で起動するので git は素の形で書けるが、作業
-  # ディレクトリの絶対パスを知っているため "git -C <絶対パス> status" も書く。
-  # ルールは最初の * までを文字どおり照合するので、この形は個別に持つしかない。
-  # "Bash(git:*)" 一本にはできない（* がサブコマンドの位置に来ると git -c で
-  # 任意のプログラムを起動でき、curl や gh の deny を迂回される）
-  jq --arg wt "$task_dir" --argjson extra "$extra_json" --argjson deny "$deny_json" \
-    'def dir_form:
-       map(select(startswith("Bash(git ")))
-       | map(sub("^Bash\\(git "; "Bash(git -C \($wt)/repo "));
-     .permissions.allow as $allow
-     | .permissions.deny as $deny_base
-     | .permissions.allow = (
-        ["Read(//\($wt)/**)", "Edit(//\($wt)/**)"]
-        + $extra + $allow + ($allow | dir_form))
-     | .permissions.deny = ($deny + $deny_base + ($deny_base | dir_form))' \
-    "$AGENT_DIR/settings/agent-settings.json" > "$settings" || return 1
+  local settings="$log_dir/settings.json"
+  build_agent_settings "$task_dir" "$settings" || return 1
 
   # 既存ブランチを引き継いだ場合、既にあるコミットを「今回の成果」と誤認しないよう
   # 実行前の HEAD を控えておく
@@ -524,7 +551,7 @@ run_task() {
   fi
 
   local rc=0
-  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$resume_id" || rc=$?
+  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "$resume_id" || rc=$?
 
   # 保持期間を過ぎた会話は再開できない。この失敗は課金ゼロで即座に返るので、
   # 会話なしでやり直す。前回の情報はプロンプト側にも入っているため、
@@ -536,7 +563,7 @@ run_task() {
     forget_session "$number"
     resume_id=""
     rc=0
-    invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "" || rc=$?
+    invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "" || rc=$?
   fi
 
   local result is_error cost
@@ -608,9 +635,7 @@ run_task() {
   fi
 
   log "[$task_id] push します: $branch"
-  local -a push_env=()
-  use_github_app && push_env=(env "GIT_ASKPASS=$(app_git_askpass)" "GH_TOKEN=$GH_TOKEN")
-  if ! "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease; then
+  if ! push_workspace "$wt" "$branch"; then
     err "[$task_id] push に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
     post_report "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"

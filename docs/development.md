@@ -46,10 +46,14 @@ lib/discover.ts         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
 tools/fake-agent        claude の代役スタブ（動作検証用）
+tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
+tools/dispatch-workflow エージェントが workflow_dispatch を起動する入口（同上、許可リスト付き）
+tools/guard-host-commands 上の 2 つを単独でしか呼べなくする PreToolUse フック
 prompts/issue.md        エージェントへの追加システムプロンプト
+prompts/ci.md           push と CI の結果の読み方
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
-settings/               エージェントの権限の基本設定
+settings/               エージェントの sandbox と権限の基本設定
 state/                  処理済みコメント ID、ポーリング時刻、コスト実績、会話 ID
 logs/<task-id>/         stream-json の生ログ、stderr、生成された settings
 logs/console/           コンソールが起動した poll.sh の実行ログ
