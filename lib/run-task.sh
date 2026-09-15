@@ -87,7 +87,7 @@ set_labels() {
     warn "ラベル '$add' を付けられませんでした（setup.sh でラベルを作成してください）。既存のラベルは変更しません"
     return 0
   fi
-  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_DONE" "$LABEL_FAILED"; do
+  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_DONE" "$LABEL_FAILED"; do
     [[ $l == "$add" ]] && continue
     gh issue edit "$issue" -R "$REPO" --remove-label "$l" >/dev/null 2>&1 || true
   done
@@ -99,105 +99,6 @@ request_review() {
   if ! out=$(gh pr edit "$branch" -R "$REPO" --add-reviewer "$reviewer" 2>&1); then
     warn "[$task_id] レビュアー '$reviewer' を指定できませんでした: $out"
   fi
-}
-
-PLAN_FILE_NAME='.mopu-agent-plan.json'
-
-# 分解で生まれた Issue を再分解させないための判定。本文のマーカーは自分で
-# 埋めるので確実に効き、parent_issue_url は GitHub 上で手動で紐付けられた
-# sub issue も拾える。親のない Issue ではこのキー自体が存在しない
-is_sub_issue() {
-  local number="$1" body="$2"
-  [[ $body == *"$SUB_ISSUE_MARKER"* ]] && return 0
-  [[ -n $(gh api "repos/$REPO/issues/$number" --jq '.parent_issue_url // empty' 2>/dev/null) ]]
-}
-
-validate_plan() {
-  jq -e --argjson max "$MAX_SUB_ISSUES" '
-    if (.sub_issues | type) != "array" then false
-    elif (.sub_issues | length) < 1 or (.sub_issues | length) > $max then false
-    else all(.sub_issues[]; (.title | type) == "string" and (.title | length) > 0)
-    end' "$1" >/dev/null 2>&1
-}
-
-# 作成した sub issue を "- #番号 タイトル" の行として標準出力へ返す
-create_sub_issues() {
-  local parent="$1" plan="$2" count i title body resp num id
-  count=$(jq '.sub_issues | length' "$plan")
-  for (( i = 0; i < count; i++ )); do
-    title=$(jq -r ".sub_issues[$i].title" "$plan")
-    body=$(jq -r ".sub_issues[$i].body // \"\"" "$plan")
-    body=$(printf '%s\n\n---\n%s\n%s #%s -->\n' \
-      "$body" "$COMMENT_MARKER" "$SUB_ISSUE_MARKER" "$parent")
-
-    if ! resp=$(gh api "repos/$REPO/issues" \
-      -f "title=$title" -f "body=$body" -f "labels[]=$LABEL_QUEUED" 2>&1)
-    then
-      warn "sub issue の作成に失敗しました: $title"
-      warn "$(head -3 <<<"$resp")"
-      continue
-    fi
-
-    num=$(jq -r '.number' <<<"$resp")
-    id=$(jq -r '.id' <<<"$resp")
-
-    # 親子の紐付けだけ失敗しても、作成済みの Issue は残して先へ進む
-    if ! gh api -X POST "repos/$REPO/issues/$parent/sub_issues" \
-      -F "sub_issue_id=$id" >/dev/null 2>&1
-    then
-      warn "#$num を #$parent の sub issue に紐付けられませんでした"
-    fi
-
-    printf -- '- #%s %s\n' "$num" "$title"
-  done
-}
-
-# 分解パス。sub issue を作って親 Issue にまとめをコメントする
-handle_plan() {
-  local task_id="$1" number="$2" plan="$3" result="$4" cost="$5" pct_before="$6" task_dir="$7"
-
-  if ! validate_plan "$plan"; then
-    err "[$task_id] $PLAN_FILE_NAME の内容が不正です"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
-      "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
-    record_spend "$task_id" "$cost" "$pct_before" ""
-    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-    return 1
-  fi
-
-  local summary reason created
-  summary=$(jq -r '.summary // ""' "$plan")
-  reason=$(jq -r '.reason // ""' "$plan")
-
-  log "[$task_id] タスクを分解します ($(jq '.sub_issues | length' "$plan") 件)"
-  created=$(create_sub_issues "$number" "$plan")
-
-  if [[ -z $created ]]; then
-    err "[$task_id] sub issue を 1 件も作成できませんでした"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "タスク分解は行いましたが、sub issue の作成に失敗しました。ログ: \`$(agent_relpath "$AGENT_DIR/logs/$task_id")\`"
-    record_spend "$task_id" "$cost" "$pct_before" ""
-    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-    return 1
-  fi
-
-  set_labels "$number" "$LABEL_DONE"
-  post_report "$(
-    printf '%s\n\n---\n\n**このタスクは大きいため、実装せず分解しました。**\n\n' "${result:-}"
-    [[ -n $summary ]] && printf '%s\n\n' "$summary"
-    [[ -n $reason ]]  && printf '理由: %s\n\n' "$reason"
-    printf '**作成した sub issue**:\n%s\n\n' "$created"
-    printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装されます。\n\n' "$LABEL_QUEUED"
-    printf '推定コスト: $%s\n' "$cost"
-  )"
-
-  local pct_after=""
-  parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
-  remove_workspace "$task_dir"
-  log "[$task_id] 分解完了: $(wc -l <<<"$created") 件の sub issue を作成しました"
-  return 0
 }
 
 # .result は複数行なので、行単位の tail では最終行しか取れない。
@@ -293,6 +194,21 @@ build_retry_context() {
     printf '%s\n' "${changes:-（なし）}"
     echo '```'
   } | head -c 20000
+}
+
+build_pending_plan_context() {
+  {
+    echo "## 承認待ちの分解案"
+    echo
+    echo "この Issue には、前回のセッションが提案した分解案が承認待ちで残っています。"
+    echo "上のコメントはその案への返答です。案を直す指示なら、同じ判定基準で"
+    echo "作り直した案を計画ファイルに書いてください（実装はしない）。"
+    echo "分解せずに実装するよう指示されたなら、案は捨ててそのまま実装して構いません。"
+    echo
+    echo '```json'
+    plan_from_comment "$1"
+    echo '```'
+  }
 }
 
 build_prompt() {
@@ -520,9 +436,12 @@ run_task() {
       -e "s|%%PLAN_FILE%%|$plan_file|g" "$AGENT_DIR/prompts/decompose.md")"
   fi
 
-  local prompt
+  local prompt pending_plan=""
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
   [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
+  if [[ $kind == comment ]] && (( ! no_decompose )) && pending_plan=$(latest_plan_comment "$number"); then
+    prompt+=$'\n\n'"$(build_pending_plan_context "$pending_plan")"
+  fi
 
   local settings="$log_dir/settings.json"
   build_agent_settings "$task_dir" "$settings" || return 1
@@ -610,7 +529,7 @@ run_task() {
       warn "[$task_id] 分解済みタスクなので $PLAN_FILE_NAME を無視します"
       rm -f "$plan_file"
     else
-      handle_plan "$task_id" "$number" "$plan_file" "$result" "$cost" "$pct_before" "$task_dir"
+      propose_plan "$task_id" "$number" "$plan_file" "$cost" "$pct_before" "$task_dir"
       return $?
     fi
   fi
@@ -627,7 +546,7 @@ run_task() {
     fi
 
     log "[$task_id] コード変更なし。結果のみコメントします"
-    set_labels "$number" "$LABEL_DONE"
+    set_labels "$number" "$( [[ -n $pending_plan ]] && printf '%s' "$LABEL_AWAITING" || printf '%s' "$LABEL_DONE" )"
     post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
     record_spend "$task_id" "$cost" "$pct_before" ""
     remove_workspace "$task_dir"

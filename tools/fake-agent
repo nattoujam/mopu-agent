@@ -66,9 +66,8 @@ git_commit() {
 
 write_plan() {
   jq -n --argjson n "$SUB_ISSUES" \
-    '{summary:"検証用のダミー分解です。",
-      reason:"fake-agent が FAKE_AGENT_MODE=plan で生成しました。",
-      sub_issues:[range($n) | {title:"ダミー sub issue \(.+1)", body:"fake-agent が作成しました。"}]}' \
+    '{reason:"fake-agent が FAKE_AGENT_MODE=plan で生成しました。",
+      sub_issues:[range($n) | {title:"ダミー sub issue \(.+1)", outline:"検証用のダミー", body:"fake-agent が作成しました。"}]}' \
     > "$PLAN_FILE"
 }
 

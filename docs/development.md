@@ -14,7 +14,7 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
 | `commit`（既定） | worktree にファイルを追加してコミット | push → PR 作成 → `agent:done` |
 | `noop` | 何もせず結果だけ返す | 「コード変更なし」でコメントのみ |
 | `dirty` | 編集するがコミットしない | 未コミット検知 → `agent:failed` |
-| `plan` | 妥当な `.mopu-agent-plan.json` を書く | 分解 → sub issue 作成 |
+| `plan` | 妥当な `.mopu-agent-plan.json` を書く | 分解案をコメント → `agent:awaiting-approval` |
 | `badplan` | `sub_issues` が空の plan を書く | `validate_plan` 不合格 → `agent:failed` |
 | `error` | `is_error: true` を返す | 実行失敗 → `agent:failed` |
 | `crash` | stderr を出して exit 1 | 実行失敗 → `agent:failed` |
@@ -44,6 +44,7 @@ lib/github-app.sh       GitHub App 認証（JWT → installation token）
 lib/budget.sh           利用枠ゲート（/usage のパース）
 lib/discover.ts         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
+lib/plan.sh             タスク分解の提案と承認（sub issue 作成）
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
 tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）

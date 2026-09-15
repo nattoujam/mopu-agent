@@ -47,6 +47,7 @@ load_config() {
   : "${TRIGGER_COMMAND:=/claude}"
   : "${LABEL_QUEUED:=agent:queued}"
   : "${LABEL_RUNNING:=agent:running}"
+  : "${LABEL_AWAITING:=agent:awaiting-approval}"
   : "${LABEL_DONE:=agent:done}"
   : "${LABEL_FAILED:=agent:failed}"
   : "${MODEL:=opus}"
@@ -120,7 +121,7 @@ require_labels_ready() {
   local existing missing=() l
   existing=$(gh label list -R "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null) \
     || die "ラベル一覧を取得できませんでした: $REPO"
-  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_DONE" "$LABEL_FAILED"; do
+  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_DONE" "$LABEL_FAILED"; do
     grep -qxF -- "$l" <<<"$existing" || missing+=("$l")
   done
   (( ${#missing[@]} == 0 )) \

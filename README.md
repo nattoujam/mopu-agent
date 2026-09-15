@@ -6,7 +6,7 @@ Anthropic API key を使わず、ログイン済みの `claude` CLI（サブス�
 ```
 Issue に agent:queued ラベル ─┐                              ┌─▶ push ─▶ PR
                               ├─▶ poll.sh ─▶ worktree ─▶ claude -p ─┤
-コメントに /claude ──────────┘                              └─▶ タスク分解 ─▶ sub issue
+コメントに /claude ──────────┘                              └─▶ 分解案 ─▶ /claude approve ─▶ sub issue
 ```
 
 ## 依存
@@ -39,8 +39,12 @@ Issue に `agent:queued` を付けて `./poll.sh` を実行する。ラベルは
 
 ```
 agent:queued ──▶ agent:running ──▶ agent:done
-                       └────────▶ agent:failed
+                       ├────────▶ agent:failed
+                       └────────▶ agent:awaiting-approval ──(/claude approve)──▶ agent:done
 ```
+
+タスクが大きいとエージェントは実装せず分解案をコメントし、`agent:awaiting-approval` で止まる。
+`/claude approve` とコメントすると sub issue が作られる（詳細は `docs/task-flow.md`）。
 
 ### コメントでトリガーする
 

@@ -42,6 +42,7 @@ log "mopu-agent $AGENT_COMMIT"
 source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"
+source "$AGENT_DIR/lib/plan.sh"
 source "$AGENT_DIR/lib/run-task.sh"
 # タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
 discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
@@ -81,6 +82,13 @@ sub_issue_deps() {
   deps=$(jq -r '(.deps // []) | map("#\(.)") | join(", ")' <<<"$1")
   [[ -n $deps ]] || return 1
   printf '%s' "$deps"
+}
+
+mark_task_seen() {
+  local comment_id
+  for comment_id in $(jq -r '(.comments // [])[].id' <<<"$1"); do
+    discover mark-seen "$comment_id"
+  done
 }
 
 # 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
@@ -132,7 +140,9 @@ if (( DRY_RUN )); then
                   + (if ((.comments // []) | length) > 1
                      then "  ← コメント \(.comments | length) 件をまとめて処理"
                      else "" end)' <<<"$t")
-    if blocking=$(sub_issue_deps "$t"); then
+    if is_approve_task "$t" >/dev/null; then
+      line+="  ← 分解案の承認（エージェントは起動しない）"
+    elif blocking=$(sub_issue_deps "$t"); then
       line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
     elif in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
       line+="  ← 進行中の PR があるためスキップ"
@@ -165,6 +175,12 @@ while IFS= read -r t <&3; do
   fi
 
   number=$(jq -r '.number' <<<"$t")
+  # 承認はホストだけで済むので、進行中 PR や利用枠のゲートより前に処理する
+  if approve_plan_task "$t"; then
+    mark_task_seen "$t"
+    (( processed++ ))
+    continue
+  fi
   if blocking=$(sub_issue_deps "$t"); then
     log "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
     continue
@@ -195,9 +211,7 @@ while IFS= read -r t <&3; do
     OPEN_AGENT_BRANCHES+=("${BRANCH_PREFIX}${number}")
     (( OPEN_AGENT_PRS++ ))
   fi
-  for comment_id in $(jq -r '(.comments // [])[].id' <<<"$t"); do
-    discover mark-seen "$comment_id"
-  done
+  mark_task_seen "$t"
   (( processed++ ))
 done 3<<<"$tasks"
 
