@@ -33,7 +33,8 @@ app_token() {
   local install_id
   install_id=$(GH_TOKEN="" gh api -H "Authorization: Bearer $jwt" \
     "repos/$REPO/installation" --jq '.id' 2>/dev/null)
-  if [[ -z $install_id ]]; then
+  # 404 でも gh は本文を出すので、--jq '.id' は空ではなく "null" になる
+  if [[ ! $install_id =~ ^[0-9]+$ ]]; then
     err "App が $REPO にインストールされていません（またはApp ID/秘密鍵が不正です）"
     return 1
   fi
@@ -55,7 +56,7 @@ app_token_with() {
   jwt=$(app_jwt) || return 1
   install_id=$(GH_TOKEN="" gh api -H "Authorization: Bearer $jwt" \
     "repos/$REPO/installation" --jq '.id' 2>/dev/null)
-  [[ -n $install_id ]] || return 1
+  [[ $install_id =~ ^[0-9]+$ ]] || return 1
   GH_TOKEN="" gh api -X POST -H "Authorization: Bearer $jwt" \
     "app/installations/$install_id/access_tokens" \
     --input <(printf '{"permissions":%s}' "$perms") --jq '.token' 2>/dev/null
