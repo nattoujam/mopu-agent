@@ -346,6 +346,13 @@ async function api(path, options) {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
+function postJson(path, body) {
+  return api(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+}
 function note(text, cls) {
   const el = $('msg');
   el.textContent = text;
@@ -622,11 +629,7 @@ function retryable(s) {
 
 async function retryTask(number) {
   try {
-    status = await api('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ retry: Number(number) }),
-    });
+    status = await postJson('/api/run', { retry: Number(number) });
     render(); renderRuns();
     note(`#${number} を再実行します`, 'ok');
   } catch (e) { note(e.message, 'err'); }
@@ -656,11 +659,7 @@ $('presets').querySelectorAll('button').forEach((b) => {
 });
 async function applyInterval() {
   try {
-    status = await api('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ interval: $('intervalInput').value.trim() }),
-    });
+    status = await postJson('/api/settings', { interval: $('intervalInput').value.trim() });
     intervalDirty = false;
     offset = status.now - Date.now() / 1000;
     render();
@@ -673,11 +672,7 @@ $('intervalInput').onkeydown = (e) => { if (e.key === 'Enter') applyInterval(); 
 
 $('toggleBtn').onclick = async () => {
   try {
-    status = await api('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: !status.scheduler.enabled }),
-    });
+    status = await postJson('/api/settings', { enabled: !status.scheduler.enabled });
     render();
     note(status.scheduler.enabled ? 'スケジューラを再開しました' : 'スケジューラを停止しました', 'ok');
   } catch (e) { note(e.message, 'err'); }
@@ -685,7 +680,7 @@ $('toggleBtn').onclick = async () => {
 
 $('runNowBtn').onclick = async () => {
   try {
-    status = await api('/api/run', { method: 'POST' });
+    status = await postJson('/api/run');
     render(); renderRuns();
     note('ポーリングを開始しました', 'ok');
   } catch (e) { note(e.message, 'err'); }

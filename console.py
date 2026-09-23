@@ -504,13 +504,39 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, code, message):
         self._json({"error": message}, code)
 
+    # 本文を読まずに返すので、接続を使い回すと残った本文が次のリクエスト行として解釈される
+    def _reject(self, code, message):
+        self.close_connection = True
+        self._error(code, message)
+
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    # DNS rebinding で外部のページからこのサーバーを同一オリジンとして読まれないため
+    def _host_allowed(self):
+        if ALLOW_REMOTE:
+            return True
+        return (self.headers.get("Host") or "").lower() in ALLOWED_HOSTS
+
+    # text/plain などの POST は preflight なしで他サイトから届く。JSON を必須に
+    # して preflight を強制し、CORS ヘッダーを返さないことで拒否させている
+    def _write_allowed(self):
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._reject(415, "Content-Type は application/json にしてください")
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None and urlparse(origin).netloc.lower() != (self.headers.get("Host") or "").lower():
+            self._reject(403, "別のオリジンからの操作は受け付けません")
+            return False
+        return True
+
     def do_GET(self):
+        if not self._host_allowed():
+            return self._reject(403, "Host が不正です")
         path = unquote(urlparse(self.path).path)
         if path in ("/", "/index.html"):
             page = WEB_DIR / "index.html"
@@ -564,6 +590,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._error(404, "not found")
 
     def do_POST(self):
+        if not self._host_allowed():
+            return self._reject(403, "Host が不正です")
+        if not self._write_allowed():
+            return
         path = unquote(urlparse(self.path).path)
         try:
             body = self._body()
@@ -613,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 SCHEDULER = Scheduler()
+ALLOW_REMOTE = os.environ.get("CONSOLE_ALLOW_REMOTE") == "1"
+ALLOWED_HOSTS = set()
 
 
 def _raise_interrupt(signum, frame):
@@ -623,7 +655,7 @@ def main():
     host = os.environ.get("CONSOLE_HOST") or "127.0.0.1"
     port = int(os.environ.get("CONSOLE_PORT") or 8787)
     # コンソールから poll.sh 越しにエージェントを起動できる = 実質的な任意コード実行
-    if host not in ("127.0.0.1", "::1", "localhost") and os.environ.get("CONSOLE_ALLOW_REMOTE") != "1":
+    if host not in ("127.0.0.1", "::1", "localhost") and not ALLOW_REMOTE:
         log(f"{host} での待受は拒否します。認証がないため loopback 以外に晒すのは危険です")
         log("それでも公開する場合は CONSOLE_ALLOW_REMOTE=1 を設定し、前段で認証をかけてください")
         return 1
@@ -632,6 +664,7 @@ def main():
         log(f"poll.sh が見つかりません: {AGENT_DIR}")
         return 1
 
+    ALLOWED_HOSTS.update(f"{h}:{port}" for h in ("127.0.0.1", "localhost", "[::1]"))
     RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
     # 既定の SIGTERM は finally を通さずにプロセスを落とすため、実行中の poll.sh を
     # 待つ後始末が走らない。systemd stop で agent:running ラベルが残るのを避ける
