@@ -29,29 +29,21 @@ Repository permissions は次の 4 つだけ与える。
 | Pull requests | Read and write | PR の作成、レビュアーの指定 |
 | Metadata | Read-only | 必須（自動で付く） |
 
-## 秘密鍵の配置と設定
+## コンソールで登録する
 
-ダウンロードした `.pem` を置く。
+コンソール（`./console.sh`）の「設定」タブの下にある「GitHub App」で、App ID と、
+ダウンロードした `.pem`（ファイル選択か中身の貼り付け）を入れて「登録」を押す。
 
-```bash
-mkdir -p ~/.config/mopu-agent
-mv ~/Downloads/*.private-key.pem ~/.config/mopu-agent/app.pem
-chmod 600 ~/.config/mopu-agent/app.pem
-```
+登録の前に、鍵が RSA 秘密鍵として読めるか、その鍵と App ID で GitHub の `GET /app` が通るかを確かめる。
+どちらかが失敗したら何も保存しない。
 
-`config.env` に App ID と鍵のパスを設定する。
+登録後の表示は App ID、bot 名、登録日時と、秘密鍵の **SHA-256 フィンガープリント**だけ。鍵の中身は画面にも
+API にも出ない。フィンガープリントは GitHub の App 設定画面の「Private keys」に出る値と同じ計算なので、
+どの鍵を登録したかはそこで照合できる。
 
-```bash
-APP_ID='123456'
-APP_PRIVATE_KEY='~/.config/mopu-agent/app.pem'
-```
-
-## 確認
-
-```bash
-./setup.sh
-# → GitHub App として動作します: nattoujam-mopu-agent[bot]
-```
+登録した鍵は編集できない。差し替えるときは「削除」してから登録し直す。GitHub 側には鍵を複数置けるので、
+先に新しい鍵を発行しておけば、bot 名義で投稿できない時間は画面操作のあいだだけで済む。
+削除はポーリングの実行中にはできない（タスクの途中の push が鍵を読み直すため）。
 
 以降、Issue コメント・PR・コミットのすべてが bot 名義になる。
 
@@ -60,5 +52,8 @@ APP_PRIVATE_KEY='~/.config/mopu-agent/app.pem'
 - JWT は RS256 固定。`iat` を 60 秒過去に、`exp` を上限の 10 分先に置いている（`lib/github-app.sh`）
 - installation access token は **1 時間で失効**する。ポーリングごとに取り直す（プロセス内でキャッシュ）
 - コミットの author は `<bot-user-id>+<slug>[bot]@users.noreply.github.com`。この形式にすると GitHub 上で App のアイコンが表示される
-- 秘密鍵は `config.env` ごと `.gitignore` 済み。`chmod 600` でないと警告が出る
+- 秘密鍵は `state/secrets/github-app.pem`（ディレクトリ 700、ファイル 600）に置かれ、App ID などは
+  `state/settings.json` の `github_app` に入る。`state/` はエージェントの sandbox から読めない。
+  鍵が 600 でないと `poll.sh` は起動を拒否する
+- コンソールと鍵のやりとりをするので、`CONSOLE_ALLOW_REMOTE=1` で公開するなら前段は必ず TLS にすること
 - **App が作成した PR は GitHub Actions を発火しない。** 対象リポジトリで CI を回しているなら影響する

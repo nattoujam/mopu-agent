@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# GitHub App の ID と秘密鍵の組を検証し、{slug, fingerprint} を JSON で返す。
+# 終了コード 3: 鍵を RSA 秘密鍵として読めない / 4: GitHub がこの組を受け付けない
+set -euo pipefail
+
+(( $# == 2 )) || { echo "使い方: app-check <App ID> <秘密鍵のパス>" >&2; exit 2; }
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+source "$AGENT_DIR/lib/github-app.sh"
+
+APP_ID="$1"
+APP_PRIVATE_KEY="$2"
+[[ $APP_ID =~ ^[0-9]+$ ]] || { echo "App ID は数字で指定してください" >&2; exit 2; }
+
+openssl rsa -check -noout -in "$APP_PRIVATE_KEY" >/dev/null 2>&1 \
+  || { echo "RSA 秘密鍵として読めません" >&2; exit 3; }
+
+# GitHub の App 設定画面に表示されるフィンガープリントと同じ計算
+fingerprint=$(openssl rsa -in "$APP_PRIVATE_KEY" -pubout -outform DER 2>/dev/null \
+  | openssl sha256 -binary | openssl base64)
+
+jwt=$(app_jwt) || { echo "JWT を生成できません" >&2; exit 3; }
+slug=$(GH_TOKEN="" gh api -H "Authorization: Bearer $jwt" app --jq '.slug' 2>/dev/null) \
+  || { echo "GitHub が App ID $APP_ID とこの鍵の組を受け付けませんでした" >&2; exit 4; }
+[[ -n $slug ]] || { echo "GitHub から App の情報を取得できませんでした" >&2; exit 4; }
+
+jq -nc --arg slug "$slug" --arg fp "SHA256:$fingerprint" '{slug: $slug, fingerprint: $fp}'

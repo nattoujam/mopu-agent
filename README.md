@@ -31,7 +31,7 @@ cp config.env.example config.env   # コンソールの待受先など（既定�
 ```
 
 設定は `state/settings.json` に保存される。以前の `config.env` に設定を書いていた場合は、
-`tools/migrate-config` を 1 回実行すると移行できる（元のファイルは `config.env.bak` に残る）。
+`tools/migrate-config` を 1 回実行すると移行できる。GitHub App の鍵も取り込む（元のファイルは `config.env.bak` に残る）。
 
 ## 使い方
 

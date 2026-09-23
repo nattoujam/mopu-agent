@@ -24,6 +24,10 @@ RUNS_FILE = STATE_DIR / "console-runs.jsonl"
 SPEND_FILE = STATE_DIR / "spend.jsonl"
 LAST_POLL_FILE = STATE_DIR / "last-poll"
 POLL_LOCK = STATE_DIR / "poll.lock"
+SECRETS_DIR = STATE_DIR / "secrets"
+APP_KEY_FILE = SECRETS_DIR / "github-app.pem"
+APP_CHECK = AGENT_DIR / "tools" / "app-check"
+MAX_BODY = 1024 * 1024
 
 # 60秒未満はポーリングというより連打で、gh のレート上限と利用枠を無駄に削る
 MIN_INTERVAL = 60
@@ -227,6 +231,81 @@ def validate_section(scope, defs, values):
         except ValueError as exc:
             raise SettingsError(f"{scope}.{key}", f"{d['label']}: {exc}") from None
     return clean
+
+
+def app_view(settings):
+    app = (settings or {}).get("github_app")
+    if not app or not APP_KEY_FILE.is_file():
+        return {"registered": False, "key_without_app": APP_KEY_FILE.is_file() and not app}
+    return {
+        "registered": True,
+        "app_id": app.get("app_id"),
+        "bot": f"{app.get('slug')}[bot]",
+        "fingerprint": app.get("fingerprint"),
+        "registered_at": app.get("registered_at"),
+    }
+
+
+class BodyTooLarge(ValueError):
+    pass
+
+
+class AppError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def register_app(app_id, pem):
+    SECRETS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(SECRETS_DIR, 0o700)
+    if APP_KEY_FILE.exists():
+        raise AppError(409, "秘密鍵が登録済みです。差し替えるには先に削除してください")
+    tmp = SECRETS_DIR / f".github-app.pem.{os.getpid()}.{threading.get_ident()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pem if pem.endswith("\n") else pem + "\n")
+        try:
+            proc = subprocess.run(
+                [str(APP_CHECK), str(app_id), str(tmp)],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            raise AppError(504, "GitHub への確認がタイムアウトしました") from None
+        if proc.returncode != 0:
+            message = proc.stderr.strip().splitlines()[-1:] or ["鍵を検証できませんでした"]
+            raise AppError(400, message[0])
+        info = json.loads(proc.stdout)
+        try:
+            os.link(tmp, APP_KEY_FILE)
+        except FileExistsError:
+            raise AppError(409, "秘密鍵が登録済みです。差し替えるには先に削除してください") from None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    def mutate(data):
+        data["github_app"] = {
+            "app_id": app_id,
+            "slug": info["slug"],
+            "fingerprint": info["fingerprint"],
+            "registered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+
+    return update_settings(mutate)
+
+
+def delete_app():
+    fd = os.open(POLL_LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            flock(fd, LOCK_EX | LOCK_NB)
+        except OSError:
+            raise AppError(409, "ポーリングの実行中は削除できません。終わってから操作してください") from None
+        APP_KEY_FILE.unlink(missing_ok=True)
+        return update_settings(lambda data: data.pop("github_app", None))
+    finally:
+        os.close(fd)
 
 
 def settings_view(settings):
@@ -620,6 +699,8 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
+        if length > MAX_BODY:
+            raise BodyTooLarge()
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     # DNS rebinding で外部のページからこのサーバーを同一オリジンとして読まれないため
@@ -655,6 +736,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             try:
                 return self._json(settings_view(load_settings()))
+            except ValueError:
+                return self._error(500, "state/settings.json が壊れています")
+        if path == "/api/github-app":
+            try:
+                return self._json(app_view(load_settings()))
             except ValueError:
                 return self._error(500, "state/settings.json が壊れています")
         if path == "/api/tasks":
@@ -709,10 +795,14 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlparse(self.path).path)
         try:
             body = self._body()
+        except BodyTooLarge:
+            return self._reject(413, "本文が大きすぎます")
         except ValueError:
             return self._error(400, "JSON を解釈できません")
         if path == "/api/settings":
             return self._save_settings(body)
+        if path == "/api/github-app":
+            return self._register_app(body)
         if path == "/api/scheduler":
             interval = None
             if "interval" in body:
@@ -740,6 +830,40 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(409, "すでにポーリングが実行中です")
             return self._json(self._status())
         return self._error(404, "not found")
+
+    def do_DELETE(self):
+        if not self._host_allowed():
+            return self._reject(403, "Host が不正です")
+        if not self._write_allowed():
+            return
+        try:
+            self._body()
+        except BodyTooLarge:
+            return self._reject(413, "本文が大きすぎます")
+        except ValueError:
+            return self._error(400, "JSON を解釈できません")
+        if unquote(urlparse(self.path).path) != "/api/github-app":
+            return self._error(404, "not found")
+        try:
+            return self._json(app_view(delete_app()))
+        except AppError as exc:
+            return self._error(exc.code, str(exc))
+
+    def _register_app(self, body):
+        if not isinstance(body, dict):
+            return self._error(400, "JSON オブジェクトで指定してください")
+        app_id = body.get("app_id")
+        if isinstance(app_id, str) and app_id.strip().isdigit():
+            app_id = int(app_id.strip())
+        if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
+            return self._json({"error": "App ID は正の整数で指定してください", "field": "app.app_id"}, 400)
+        pem = body.get("private_key")
+        if not isinstance(pem, str) or "-----BEGIN" not in pem or len(pem) > 32 * 1024:
+            return self._json({"error": "秘密鍵は .pem ファイルの中身を貼り付けてください", "field": "app.private_key"}, 400)
+        try:
+            return self._json(app_view(register_app(app_id, pem.replace("\r\n", "\n"))))
+        except AppError as exc:
+            return self._json({"error": str(exc), "field": "app.private_key"}, exc.code)
 
     def _save_settings(self, body):
         if not isinstance(body, dict):

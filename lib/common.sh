@@ -25,6 +25,7 @@ LABEL_DONE='agent:done'
 LABEL_FAILED='agent:failed'
 SETTINGS_FILE="$AGENT_DIR/state/settings.json"
 SETTINGS_SCHEMA="$AGENT_DIR/settings/schema.json"
+APP_KEY_FILE="$AGENT_DIR/state/secrets/github-app.pem"
 
 log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -63,6 +64,7 @@ settings_env() {
             else "\($d.env)=\($v | join(" ") | @sh)" end
           else "\($d.env)=\($v | tostring | @sh)" end;
     "REPO=\($repo | @sh)",
+    "APP_ID=\(.github_app.app_id // "" | tostring | @sh)",
     assign($s.global; .global // {}),
     assign($s.repo; $repos[$repo])
   ' "$SETTINGS_FILE"
@@ -71,7 +73,7 @@ settings_env() {
 load_config() {
   local cfg="$AGENT_DIR/config.env" env legacy=0
   if [[ -f $cfg ]]; then
-    grep -qE '^[[:space:]]*REPO=' "$cfg" && legacy=1
+    grep -qE "^[[:space:]]*(REPO|APP_ID|APP_PRIVATE_KEY)=[\"']?[^\"'[:space:]]" "$cfg" && legacy=1
     # shellcheck disable=SC1090
     source "$cfg"
   fi
@@ -80,7 +82,7 @@ load_config() {
     (( legacy )) && die "設定がコンソールへ移りました。tools/migrate-config で config.env から移行してください"
     die "設定がありません。./console.sh を起動し、画面の「設定」から登録してください"
   fi
-  (( legacy )) && warn "config.env の REPO などは使われません。tools/migrate-config で整理してください"
+  (( legacy )) && warn "config.env の REPO や APP_ID などは使われません。tools/migrate-config で整理してください"
 
   env=$(settings_env) || die "state/settings.json を読めません"
   eval "$env"
@@ -103,11 +105,13 @@ load_config() {
   fi
   export CLAUDE_BIN
 
-  if [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]]; then
-    APP_PRIVATE_KEY="${APP_PRIVATE_KEY/#\~/$HOME}"
-    [[ -f $APP_PRIVATE_KEY ]] || die "APP_PRIVATE_KEY が見つかりません: $APP_PRIVATE_KEY"
+  APP_PRIVATE_KEY=""
+  if [[ -n $APP_ID ]]; then
+    APP_PRIVATE_KEY="$APP_KEY_FILE"
+    [[ -f $APP_PRIVATE_KEY ]] \
+      || die "GitHub App の秘密鍵がありません。コンソールで App を削除して登録し直してください"
     [[ $(stat -c %a "$APP_PRIVATE_KEY") == 600 ]] \
-      || warn "秘密鍵の権限が緩いです: chmod 600 $APP_PRIVATE_KEY を実行してください"
+      || die "秘密鍵の権限が 600 ではありません: $(agent_relpath "$APP_PRIVATE_KEY")"
   fi
 
   AGENT_COMMIT="$(agent_commit)"

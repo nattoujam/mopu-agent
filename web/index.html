@@ -111,6 +111,9 @@ input:disabled { opacity: .6; }
 @media (max-width: 700px) { .field { grid-template-columns: 1fr; } .field .hint { grid-column: 1; } }
 .settings-actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
 .settings-actions .msg { margin: 0; }
+#appBox dl.kv dd { text-align: left; }
+button.danger { color: var(--err); border-color: rgba(239,122,122,.45); }
+input[type=file] { font-size: 12px; color: var(--muted); }
 button {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -296,6 +299,10 @@ dl.fields dd {
       </div>
       <div class="list" id="list"><div class="empty">読み込み中…</div></div>
       <div class="settings" id="settings" hidden></div>
+    </div>
+    <div class="card" id="appCard" hidden>
+      <h2>GitHub App</h2>
+      <div id="appBox"><div class="empty">読み込み中…</div></div>
     </div>
     <div class="card" id="detailCard">
       <h2 id="detailTitle">ログ</h2>
@@ -708,6 +715,7 @@ function switchTab(name) {
   $('list').hidden = settings;
   $('detailCard').hidden = settings;
   $('settings').hidden = !settings;
+  $('appCard').hidden = !settings;
   if (settings) { loadSettings(); return; }
   listSig = null;
   $('list').innerHTML = '<div class="empty">読み込み中…</div>';
@@ -771,6 +779,88 @@ function renderSettings(data) {
     </div>
     <div class="hint">保存した設定は次回のポーリングから反映される。ラベル設定のない新しいリポジトリでは、先に ./setup.sh でラベルを作ること。</div>`;
   $('saveSettings').onclick = () => saveSettings(schema);
+  loadApp();
+}
+
+async function loadApp() {
+  try { renderApp(await api('/api/github-app')); }
+  catch (e) { $('appBox').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+function renderApp(app, message) {
+  const box = $('appBox');
+  const msg = `<span class="msg ${message ? message[1] : ''}" id="appMsg">${esc(message ? message[0] : '')}</span>`;
+  if (app.registered) {
+    box.innerHTML = `<dl class="kv">
+        <dt>App ID</dt><dd>${esc(app.app_id)}</dd>
+        <dt>bot</dt><dd>${esc(app.bot)}</dd>
+        <dt>秘密鍵 (fingerprint)</dt><dd>${esc(app.fingerprint)}</dd>
+        <dt>登録日時</dt><dd>${esc(app.registered_at)}</dd>
+      </dl>
+      <div class="settings-actions"><button class="danger" id="deleteApp">削除</button>${msg}</div>`;
+    $('deleteApp').onclick = deleteApp;
+    return;
+  }
+  box.innerHTML = `<div class="hint" style="margin:0 0 8px">未登録。gh の既存認証（あなた自身のアカウント）で投稿している。登録すると Issue コメントと PR が bot 名義になる。${app.key_without_app ? ' 前回の登録の秘密鍵だけが残っている。削除してから登録し直すこと。' : ''}</div>
+    <div class="field" data-field="app.app_id">
+      <label for="f-app-id">App ID</label>
+      <input type="text" id="f-app-id" inputmode="numeric" autocomplete="off">
+      <div class="hint" data-help="App 設定ページの「App ID」">App 設定ページの「App ID」</div>
+    </div>
+    <div class="field" data-field="app.private_key">
+      <label for="f-app-key">秘密鍵 (.pem)</label>
+      <div><input type="file" id="f-app-file" accept=".pem"><textarea id="f-app-key" rows="4" placeholder="-----BEGIN RSA PRIVATE KEY-----" spellcheck="false" autocomplete="off" style="margin-top:6px"></textarea></div>
+      <div class="hint" data-help="登録後は表示も編集もできない">登録後は表示も編集もできない</div>
+    </div>
+    <div class="settings-actions">
+      <button class="primary" id="registerApp">登録</button>
+      ${app.key_without_app ? '<button class="danger" id="deleteApp">残った鍵を削除</button>' : ''}${msg}
+    </div>`;
+  $('f-app-file').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (file) $('f-app-key').value = await file.text();
+    e.target.value = '';
+  };
+  $('registerApp').onclick = registerApp;
+  if (app.key_without_app) $('deleteApp').onclick = deleteApp;
+}
+
+function markInvalid(e) {
+  const field = e.data && e.data.field && document.querySelector(`[data-field="${e.data.field}"]`);
+  if (!field) return;
+  field.classList.add('invalid');
+  field.querySelector('.hint').textContent = e.message;
+}
+
+async function registerApp() {
+  const btn = $('registerApp');
+  btn.disabled = true;
+  $('appMsg').textContent = 'GitHub に確認しています…';
+  $('appMsg').className = 'msg';
+  try {
+    const app = await postJson('/api/github-app', { app_id: $('f-app-id').value.trim(), private_key: $('f-app-key').value });
+    renderApp(app, ['登録しました。次回のポーリングから bot 名義で投稿する', 'ok']);
+  } catch (e) {
+    btn.disabled = false;
+    document.querySelectorAll('#appBox .field.invalid').forEach((el) => {
+      el.classList.remove('invalid');
+      el.querySelector('.hint').textContent = el.querySelector('.hint').dataset.help;
+    });
+    markInvalid(e);
+    $('appMsg').textContent = e.message;
+    $('appMsg').className = 'msg err';
+  }
+}
+
+async function deleteApp() {
+  if (!confirm('GitHub App の登録と秘密鍵を削除します。次回のポーリングから gh の既存認証（あなた自身のアカウント）で投稿します。よろしいですか？')) return;
+  try {
+    const app = await api('/api/github-app', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    renderApp(app, ['削除しました', 'ok']);
+  } catch (e) {
+    $('appMsg').textContent = e.message;
+    $('appMsg').className = 'msg err';
+  }
 }
 
 async function saveSettings(schema) {

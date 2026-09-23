@@ -7,7 +7,7 @@ source "$AGENT_DIR/lib/common.sh"
 
 cfg="$AGENT_DIR/config.env"
 console_state="$AGENT_DIR/state/console.json"
-keep_keys='CONSOLE_HOST|CONSOLE_PORT|CONSOLE_ALLOW_REMOTE|CLAUDE_BIN|APP_ID|APP_PRIVATE_KEY'
+keep_keys='CONSOLE_HOST|CONSOLE_PORT|CONSOLE_ALLOW_REMOTE|CLAUDE_BIN'
 
 [[ -f $SETTINGS_FILE ]] && die "移行済みです: $(agent_relpath "$SETTINGS_FILE")"
 [[ -f $cfg ]] || die "config.env がありません"
@@ -85,6 +85,22 @@ declare -A default_labels=(
      | del(.. | nulls)
      | if $scheduler then .scheduler = $scheduler else . end' > "$SETTINGS_FILE.tmp"
   mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
+
+  [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]] || exit 0
+  key="${APP_PRIVATE_KEY/#\~/$HOME}"
+  [[ -f $key ]] || { warn "APP_PRIVATE_KEY が見つからないため App は移行しません: $key"; exit 0; }
+  if ! info=$("$AGENT_DIR/tools/app-check" "$APP_ID" "$key"); then
+    warn "App ID と秘密鍵の組を確認できなかったため App は移行しません。コンソールから登録してください"
+    exit 0
+  fi
+  install -d -m 700 "$(dirname "$APP_KEY_FILE")"
+  install -m 600 "$key" "$APP_KEY_FILE"
+  jq --argjson id "$APP_ID" --argjson info "$info" --arg at "$(date -Iseconds)" \
+    '.github_app = {app_id: $id, slug: $info.slug, fingerprint: $info.fingerprint, registered_at: $at}' \
+    "$SETTINGS_FILE" > "$SETTINGS_FILE.tmp"
+  mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
+  log "GitHub App を移行しました: $(jq -r .slug <<<"$info")[bot] ($(jq -r .fingerprint <<<"$info"))"
+  log "元の秘密鍵 $key は残してあります。不要なら削除してください"
 )
 
 cp -p "$cfg" "$cfg.bak"
