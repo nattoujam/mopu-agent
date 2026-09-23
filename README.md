@@ -25,13 +25,16 @@ Issue に agent:queued ラベル ─┐                              ┌─▶ p
 
 ```bash
 cp config.env.example config.env   # コンソールの待受先など（既定のままでよければ不要）
-./console.sh                       # → http://127.0.0.1:8787 の「設定」で対象リポジトリとユーザーを登録
+./console.sh                       # → http://127.0.0.1:8787 の「設定」で対象リポジトリ（複数可）とユーザーを登録
 ./setup.sh                         # ラベル作成 + 依存確認
 ./poll.sh --dry-run                # 検出されるタスクを確認
 ```
 
 設定は `state/settings.json` に保存される。以前の `config.env` に設定を書いていた場合は、
 `tools/migrate-config` を 1 回実行すると移行できる。GitHub App の鍵も取り込む（元のファイルは `config.env.bak` に残る）。
+
+複数リポジトリに対応する前から使っていた場合は、poll とコンソールを止めて `tools/migrate-multi-repo` を 1 回実行する。
+`state/` の会話 ID や処理済みコメント、`logs/` と `worktrees/` のタスクを、リポジトリごとのディレクトリへ移す。
 
 ## 使い方
 
@@ -78,13 +81,16 @@ PR で指示した場合も、ブランチ・ラベル・sub issue は元 Issue 
 
 | オプション | 説明 |
 |---|---|
+| `--repo <owner/repo>` | 指定したリポジトリだけを処理（省略時は設定にある全リポジトリ） |
 | `--dry-run` | 検出したタスクを表示するだけ |
 | `--task <番号>` | 指定した Issue だけを処理（ラベル不要、同時進行ゲートも無視） |
 | `--retry <番号>` | 失敗したタスクを、残った作業ツリーと会話ごと引き継いで再開 |
 | `--ignore-budget` | 利用枠のゲートを無視 |
 
+リポジトリが複数あるとき、`--task` と `--retry` には `--repo` も要る。
+
 `--retry` は前回のタスクをそのまま再現する。コメントでトリガーしたタスクなら、
-指示だったコメント本文も引き継がれる（`logs/<タスクID>/task.json` に控えてある）。
+指示だったコメント本文も引き継がれる（`logs/<owner>__<repo>/<タスクID>/task.json` に控えてある）。
 
 ## 制限
 

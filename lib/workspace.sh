@@ -77,7 +77,7 @@ remove_workspace() {
   local task_dir="$1" wt
   [[ -d $task_dir ]] || return 0
   # rm -rf に渡すため、worktrees 配下であることを必ず確かめる
-  [[ $task_dir == "$AGENT_DIR/worktrees/"?* ]] || { err "想定外のパスは削除しません: $task_dir"; return 1; }
+  [[ $task_dir == "$WORKTREES_DIR/"?* ]] || { err "想定外のパスは削除しません: $task_dir"; return 1; }
   wt=$(workspace_repo "$task_dir")
   git -C "$REPO_DIR" worktree remove --force "$wt" 2>/dev/null
   git -C "$REPO_DIR" worktree prune

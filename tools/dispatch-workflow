@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # エージェントが workflow_dispatch を起動するための唯一の入口。sandbox の外
 # （excludedCommands）で動くので、引数は許可リストと形式で検証し、ref は
-# 親が export した MOPU_BRANCH に固定する
+# 親が export した MOPU_BRANCH に固定する。リポジトリは MOPU_TASK_DIR の置き場所から決める
 set -euo pipefail
 
 usage() { echo "使い方: dispatch-workflow <workflow.yml> [key=value ...]" >&2; exit 2; }
 (( $# >= 1 )) || usage
 workflow="$1"; shift
-: "${MOPU_BRANCH:?}"
+: "${MOPU_TASK_DIR:?}" "${MOPU_BRANCH:?}"
 
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$AGENT_DIR/lib/common.sh"
 source "$AGENT_DIR/lib/github-app.sh"
 
-load_config >/dev/null 2>&1
+repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレクトリです"
+load_config "$repo" >/dev/null
 [[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
 
 allowed=0

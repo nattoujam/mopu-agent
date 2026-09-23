@@ -15,11 +15,11 @@ source "$AGENT_DIR/lib/common.sh"
 source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/workspace.sh"
 
-load_config >/dev/null 2>&1
-[[ $MOPU_TASK_DIR == "$AGENT_DIR/worktrees/"?* ]] || die "想定外のタスクディレクトリです"
+repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレクトリです"
+load_config "$repo" >/dev/null
 [[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
 
-wt=$(workspace_repo "$MOPU_TASK_DIR")
+wt=$(workspace_repo "$(realpath -m -- "$MOPU_TASK_DIR")")
 if use_github_app; then
   GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
   export GH_TOKEN

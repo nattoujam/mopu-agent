@@ -110,7 +110,7 @@ last_result() {
 # 失敗したタスクが残していった作業ディレクトリのうち、その Issue の最新のもの
 find_leftover_task() {
   local number="$1"
-  find "$AGENT_DIR/worktrees" -mindepth 1 -maxdepth 1 -type d \
+  find "$WORKTREES_DIR" -mindepth 1 -maxdepth 1 -type d \
     \( -name "issue-${number}-*" -o -name "comment-${number}-*" \) 2>/dev/null \
     | sort | tail -1
 }
@@ -135,7 +135,7 @@ load_leftover_task() {
                             reply_number: (.reply_number // .number), url: ""}]
                      end)
         | del(.comment, .comment_id, .reply_kind, .reply_number)
-      end' "$AGENT_DIR/logs/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
+      end' "$TASK_LOGS_DIR/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
 }
 
 # タスクの会話 ID を Issue 番号ごとに控える。--retry の再開と、PR コメントへの
@@ -336,7 +336,7 @@ run_task() {
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
   set_reply_target "$number" "${CURRENT_TASK_JSON:-}"
   local branch="${BRANCH_PREFIX}${number}"
-  local task_dir="$AGENT_DIR/worktrees/$task_id"
+  local task_dir="$WORKTREES_DIR/$task_id"
 
   # --retry では新しい worktree を作らず、前回の失敗が残したものを使う
   local prev_dir="" prev_log=""
@@ -344,7 +344,7 @@ run_task() {
     prev_dir=$(find_leftover_task "$number")
     if [[ -n $prev_dir ]]; then
       task_dir="$prev_dir"
-      prev_log="$AGENT_DIR/logs/${prev_dir##*/}"
+      prev_log="$TASK_LOGS_DIR/${prev_dir##*/}"
     else
       warn "[$task_id] 引き継げる作業ツリーがないため、通常どおり新規に作成します"
     fi
@@ -355,7 +355,7 @@ run_task() {
   local replies_file="$task_dir/$REPLIES_FILE_NAME"
   # --retry で引き継いだ作業ツリーには前回の返信が残っている
   rm -f "$replies_file"
-  local log_dir="$AGENT_DIR/logs/$task_id"
+  local log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
   [[ -n ${CURRENT_TASK_JSON:-} ]] \
     && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \

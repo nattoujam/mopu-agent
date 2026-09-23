@@ -48,9 +48,9 @@ check_budget() {
 
 record_spend() {
   local task_id="$1" cost="$2" before="$3" after="$4"
-  jq -nc --arg t "$(date -Is)" --arg id "$task_id" \
+  jq -nc --arg t "$(date -Is)" --arg id "$task_id" --arg repo "$REPO" \
      --argjson cost "${cost:-0}" \
      --arg before "$before" --arg after "$after" \
-     '{time:$t, task:$id, cost_usd:$cost, pct_5h_before:$before, pct_5h_after:$after}' \
+     '{time:$t, repo:$repo, task:$id, cost_usd:$cost, pct_5h_before:$before, pct_5h_after:$after}' \
      >> "$SPEND_FILE"
 }

@@ -34,7 +34,7 @@ function run(sub: string, args: string[], ws: { dir: string; seenFile: string })
       ALLOWED_ACTORS: "nattoujam",
       BRANCH_PREFIX: "agent/issue-",
       COMMENT_MARKER: "<!-- mopu-agent -->",
-      STATE_DIR: ws.dir,
+      LAST_POLL_FILE: join(ws.dir, "last-poll"),
       SEEN_FILE: ws.seenFile,
     },
   });

@@ -45,16 +45,14 @@ agent_commit() {
   printf '%s' "$sha"
 }
 
+repo_names() {
+  jq -r '(.repos // {}) | keys[]' "$SETTINGS_FILE"
+}
+
 # 出力は eval される。値は画面から誰でも入れられるので、型を足すときも必ず @sh を通すこと
 settings_env() {
-  jq -r --slurpfile schema "$SETTINGS_SCHEMA" '
+  jq -r --slurpfile schema "$SETTINGS_SCHEMA" --arg repo "${1:-}" '
     $schema[0] as $s
-    | (.repos // {}) as $repos
-    | ($repos | keys) as $names
-    | if ($names | length) != 1 then
-        error("リポジトリがちょうど 1 件設定されている必要があります（現在 \($names | length) 件）。コンソールの「設定」で登録してください")
-      else . end
-    | $names[0] as $repo
     | def assign($defs; $vals):
         $defs | to_entries[]
         | .value as $d
@@ -63,14 +61,27 @@ settings_env() {
             if $d.shell == "array" then "\($d.env)=(\($v | map(@sh) | join(" ")))"
             else "\($d.env)=\($v | join(" ") | @sh)" end
           else "\($d.env)=\($v | tostring | @sh)" end;
-    "REPO=\($repo | @sh)",
     "APP_ID=\(.github_app.app_id // "" | tostring | @sh)",
     assign($s.global; .global // {}),
-    assign($s.repo; $repos[$repo])
+    if $repo == "" then empty
+    elif (.repos // {}) | has($repo) | not then error("設定にないリポジトリです: \($repo)")
+    else "REPO=\($repo | @sh)", assign($s.repo; .repos[$repo]) end
   ' "$SETTINGS_FILE"
 }
 
-load_config() {
+# worktrees/<owner>__<repo>/<task-id> からリポジトリ名を返す。owner には _ が
+# 使えないので、最初の __ で分ければ repo 名に __ が入っていても取り違えない
+repo_of_task_dir() {
+  local dir rel slug
+  dir=$(realpath -m -- "$1")
+  [[ $dir == "$AGENT_DIR/worktrees/"* ]] || return 1
+  rel="${dir#"$AGENT_DIR/worktrees/"}"
+  slug="${rel%%/*}"
+  [[ $rel == "$slug/"?* && ${rel#"$slug/"} != */* && $slug == ?*__?* ]] || return 1
+  printf '%s/%s' "${slug%%__*}" "${slug#*__}"
+}
+
+load_global_config() {
   local cfg="$AGENT_DIR/config.env" env legacy=0
   if [[ -f $cfg ]]; then
     grep -qE "^[[:space:]]*(REPO|APP_ID|APP_PRIVATE_KEY)=[\"']?[^\"'[:space:]]" "$cfg" && legacy=1
@@ -84,13 +95,13 @@ load_config() {
   fi
   (( legacy )) && warn "config.env の REPO や APP_ID などは使われません。tools/migrate-config で整理してください"
 
+  STATE_DIR="$AGENT_DIR/state"
+  if [[ ! -d $STATE_DIR/repos ]] && [[ -e $STATE_DIR/last-poll || -e $STATE_DIR/sessions.json || -e $STATE_DIR/seen-comments.txt ]]; then
+    die "state がリポジトリごとの配置になっていません。poll とコンソールを止めて tools/migrate-multi-repo を実行してください"
+  fi
+
   env=$(settings_env) || die "state/settings.json を読めません"
   eval "$env"
-
-  [[ $REPO == */* ]] || die "設定: リポジトリは owner/repo 形式で指定してください (現在: $REPO)"
-
-  # 第三者が書いた Issue/コメントを無条件で実行しないための必須ガード
-  [[ -n ${ALLOWED_ACTORS:-} ]] || die "設定: タスクを受け付けるユーザーが空です。誰のタスクを実行するか明示してください"
 
   : "${CLAUDE_BIN:=claude}"
 
@@ -115,16 +126,42 @@ load_config() {
   fi
 
   AGENT_COMMIT="$(agent_commit)"
+  SPEND_FILE="$STATE_DIR/spend.jsonl"
+  mkdir -p "$STATE_DIR"
+  touch "$SPEND_FILE"
+  export AGENT_COMMIT STATE_DIR SPEND_FILE
+}
+
+# 使い方: load_config [owner/repo]
+load_config() {
+  local repo="${1:-}" names env
+  load_global_config
+  if [[ -z $repo ]]; then
+    mapfile -t names < <(repo_names)
+    (( ${#names[@]} > 0 )) || die "リポジトリが設定されていません。コンソールの「設定」で登録してください"
+    (( ${#names[@]} == 1 )) || die "リポジトリが複数あります。--repo で指定してください (${names[*]})"
+    repo="${names[0]}"
+  fi
+  env=$(settings_env "$repo") || die "リポジトリの設定を読めません: $repo"
+  eval "$env"
+
+  [[ $REPO == */* ]] || die "設定: リポジトリは owner/repo 形式で指定してください (現在: $REPO)"
+
+  # 第三者が書いた Issue/コメントを無条件で実行しないための必須ガード
+  [[ -n ${ALLOWED_ACTORS:-} ]] || die "設定: $REPO のタスクを受け付けるユーザーが空です。誰のタスクを実行するか明示してください"
+
   REPO_SLUG="${REPO//\//__}"
   REPO_DIR="$AGENT_DIR/repos/$REPO_SLUG"
-  STATE_DIR="$AGENT_DIR/state"
-  SEEN_FILE="$STATE_DIR/seen-comments.txt"
-  SPEND_FILE="$STATE_DIR/spend.jsonl"
-  SESSION_FILE="$STATE_DIR/sessions.json"
-  mkdir -p "$STATE_DIR" "$AGENT_DIR/logs" "$AGENT_DIR/worktrees" "$AGENT_DIR/repos"
-  touch "$SEEN_FILE" "$SPEND_FILE"
+  REPO_STATE_DIR="$STATE_DIR/repos/$REPO_SLUG"
+  WORKTREES_DIR="$AGENT_DIR/worktrees/$REPO_SLUG"
+  TASK_LOGS_DIR="$AGENT_DIR/logs/$REPO_SLUG"
+  SEEN_FILE="$REPO_STATE_DIR/seen-comments.txt"
+  SESSION_FILE="$REPO_STATE_DIR/sessions.json"
+  LAST_POLL_FILE="$REPO_STATE_DIR/last-poll"
+  mkdir -p "$REPO_STATE_DIR" "$WORKTREES_DIR" "$TASK_LOGS_DIR" "$AGENT_DIR/repos"
+  touch "$SEEN_FILE"
   # discover.ts は設定を解釈せず、ここで確定した値を環境変数から受け取る
-  export AGENT_COMMIT REPO_SLUG REPO_DIR STATE_DIR SEEN_FILE SPEND_FILE SESSION_FILE
+  export REPO_SLUG REPO_DIR REPO_STATE_DIR WORKTREES_DIR TASK_LOGS_DIR SEEN_FILE SESSION_FILE LAST_POLL_FILE
   export REPO TRIGGER_COMMAND LABEL_QUEUED ALLOWED_ACTORS BRANCH_PREFIX COMMENT_MARKER
 }
 

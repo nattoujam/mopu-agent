@@ -6,7 +6,7 @@
 スタブはプロンプトを読まず、環境変数で挙動を決める。
 
 ```bash
-CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --task 12
+CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/sandbox --task 12
 ```
 
 | `FAKE_AGENT_MODE` | スタブの挙動 | 到達する終端 |
@@ -55,8 +55,9 @@ prompts/ci.md           push と CI の結果の読み方
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
 settings/               エージェントの sandbox と権限の基本設定
-state/                  処理済みコメント ID、ポーリング時刻、コスト実績、会話 ID
-logs/<task-id>/         stream-json の生ログ、stderr、生成された settings
+state/                  設定、コスト実績、GitHub App の鍵（secrets/）
+state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID
+logs/<slug>/<task-id>/  stream-json の生ログ、stderr、生成された settings（slug は owner__repo）
 logs/console/           コンソールが起動した poll.sh の実行ログ
 ```
 
@@ -67,6 +68,6 @@ logs/console/           コンソールが起動した poll.sh の実行ログ
 
 | 記録先 | 形 |
 | --- | --- |
-| `logs/<task-id>/task.json` | タスクの控えに `"commit"` を足す |
+| `logs/<slug>/<task-id>/task.json` | タスクの控えに `"commit"` を足す |
 | `logs/console/poll-<日時>.log` | 先頭行に `mopu-agent <SHA>` |
 | `state/console-runs.jsonl` | 各実行の記録に `"commit"` を足す（poll ログの先頭行から拾う） |

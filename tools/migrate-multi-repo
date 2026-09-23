@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# state / logs / worktrees を、リポジトリごとのディレクトリに分ける。1 回だけ実行する
+set -euo pipefail
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+state="$AGENT_DIR/state"
+[[ -f $SETTINGS_FILE ]] || die "state/settings.json がありません。先に tools/migrate-config を実行してください"
+[[ -d $state/repos ]] && die "移行済みです: $(agent_relpath "$state/repos")"
+
+exec 9>"$state/poll.lock"
+flock -n 9 || die "poll.sh が実行中です。終わってから実行してください"
+
+mapfile -t names < <(repo_names)
+(( ${#names[@]} == 1 )) \
+  || die "既存の state がどのリポジトリのものか決められません。設定のリポジトリを 1 件にしてから実行してください (${names[*]:-なし})"
+repo="${names[0]}"
+slug="${repo//\//__}"
+repo_dir="$AGENT_DIR/repos/$slug"
+task_re='^(issue|comment)-[0-9]+-[0-9]{8}-[0-9]{6}$'
+
+mkdir -p "$state/repos/$slug"
+for f in last-poll seen-comments.txt sessions.json; do
+  [[ -e $state/$f ]] && mv "$state/$f" "$state/repos/$slug/$f"
+done
+
+moved_logs=0
+mkdir -p "$AGENT_DIR/logs/$slug"
+for d in "$AGENT_DIR"/logs/*/; do
+  d="${d%/}"
+  [[ ${d##*/} =~ $task_re ]] || continue
+  mv "$d" "$AGENT_DIR/logs/$slug/"
+  (( ++moved_logs ))
+done
+
+moved_trees=0
+mkdir -p "$AGENT_DIR/worktrees/$slug"
+for d in "$AGENT_DIR"/worktrees/*/; do
+  d="${d%/}"
+  name="${d##*/}"
+  [[ $name == "$slug" ]] && continue
+  if [[ ! $name =~ $task_re ]]; then
+    warn "タスクのものではないため動かしません: $(agent_relpath "$d")"
+    continue
+  fi
+  dest="$AGENT_DIR/worktrees/$slug/$name"
+  mkdir "$dest"
+  if [[ -e $d/$REPO_SUBDIR/.git ]]; then
+    git -C "$repo_dir" worktree move "$d/$REPO_SUBDIR" "$dest/$REPO_SUBDIR"
+  fi
+  shopt -s dotglob nullglob
+  rest=("$d"/*)
+  shopt -u dotglob nullglob
+  (( ${#rest[@]} )) && mv "${rest[@]}" "$dest/"
+  rmdir "$d"
+  (( ++moved_trees ))
+done
+
+if [[ -s $state/spend.jsonl ]]; then
+  jq -c --arg r "$repo" 'if has("repo") then . else .repo = $r end' "$state/spend.jsonl" > "$state/spend.jsonl.tmp"
+  mv "$state/spend.jsonl.tmp" "$state/spend.jsonl"
+fi
+
+log "移行しました: $repo（タスクログ ${moved_logs} 件、作業ツリー ${moved_trees} 件）"

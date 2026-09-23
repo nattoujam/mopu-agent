@@ -7,27 +7,37 @@ source "$AGENT_DIR/lib/common.sh"
 DRY_RUN=0
 IGNORE_BUDGET=0
 ONLY_TASK=""
+ONLY_REPO=""
+MAX_TASKS=""
+REPORT_FILE=""
 # shellcheck disable=SC2034  # run-task.sh が参照
 RETRY=0
+PASSTHRU=()
 
 usage() {
   cat <<'EOF'
 使い方: ./poll.sh [オプション]
 
+  --repo <owner/repo> 指定したリポジトリだけを処理する（省略時は設定にある全リポジトリ）
   --dry-run           検出したタスクを表示するだけで実行しない
   --ignore-budget     利用枠のゲートを無視して実行する
   --task <番号>       指定した Issue 番号だけを処理する（ラベル不要）
   --retry <番号>      前回失敗したタスクの作業ツリーを引き継いで再開する
   -h, --help          このヘルプ
+
+リポジトリが複数あるとき、--task と --retry には --repo が必要。
 EOF
 }
 
 while (( $# )); do
   case "$1" in
-    --dry-run)       DRY_RUN=1 ;;
-    --ignore-budget) IGNORE_BUDGET=1 ;;
-    --task)          ONLY_TASK="${2:?--task には Issue 番号が必要です}"; shift ;;
-    --retry)         ONLY_TASK="${2:?--retry には Issue 番号が必要です}"; RETRY=1; shift ;;
+    --repo)          ONLY_REPO="${2:?--repo には owner/repo が必要です}"; shift ;;
+    --dry-run)       DRY_RUN=1; PASSTHRU+=("$1") ;;
+    --ignore-budget) IGNORE_BUDGET=1; PASSTHRU+=("$1") ;;
+    --task)          ONLY_TASK="${2:?--task には Issue 番号が必要です}"; PASSTHRU+=("$1" "$2"); shift ;;
+    --retry)         ONLY_TASK="${2:?--retry には Issue 番号が必要です}"; RETRY=1; PASSTHRU+=("$1" "$2"); shift ;;
+    --max-tasks)     MAX_TASKS="${2:?}"; shift ;;
+    --report)        REPORT_FILE="${2:?}"; shift ;;
     -h|--help)       usage; exit 0 ;;
     *)               die "不明なオプション: $1" ;;
   esac
@@ -35,9 +45,75 @@ while (( $# )); do
 done
 
 require_tools
-load_config
 
-log "mopu-agent $AGENT_COMMIT"
+# 利用枠はリポジトリをまたいで共有なので、1 回の上限も全体で数える。先頭が
+# 毎回同じだと、タスクの多いリポジトリだけで上限を使い切ってしまうため、
+# 開始位置を実行ごとにずらす
+poll_all_repos() {
+  local -a repos
+  local n start i repo report rc processed total=0 remaining failed=0
+
+  load_global_config
+  log "mopu-agent $AGENT_COMMIT"
+  exec 9>"$STATE_DIR/poll.lock"
+  flock -n 9 || die "別の poll.sh が実行中です"
+
+  mapfile -t repos < <(repo_names)
+  n=${#repos[@]}
+  (( n )) || die "リポジトリが設定されていません。コンソールの「設定」で登録してください"
+  if [[ -n $ONLY_TASK ]] && (( n > 1 )); then
+    die "リポジトリが複数あるため、--task / --retry には --repo も指定してください (${repos[*]})"
+  fi
+
+  start=$(cat "$STATE_DIR/next-repo" 2>/dev/null || true)
+  [[ $start =~ ^[0-9]+$ ]] || start=0
+  (( start %= n ))
+  (( DRY_RUN )) || printf '%s\n' "$(( (start + 1) % n ))" > "$STATE_DIR/next-repo"
+
+  remaining=$MAX_TASKS_PER_RUN
+  report=$(mktemp)
+  for (( i = 0; i < n; i++ )); do
+    repo="${repos[(start + i) % n]}"
+    if (( remaining <= 0 )); then
+      log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達したため、$repo 以降は次回に回します"
+      break
+    fi
+    log "── $repo ──"
+    : > "$report"
+    rc=0
+    "$AGENT_DIR/poll.sh" --repo "$repo" --max-tasks "$remaining" --report "$report" "${PASSTHRU[@]}" || rc=$?
+    processed=$(jq -r '.processed // 0' "$report" 2>/dev/null || true)
+    [[ $processed =~ ^[0-9]+$ ]] || processed=0
+    (( total += processed, remaining -= processed ))
+    (( rc == 0 )) || { warn "$repo の処理が異常終了しました (exit=$rc)"; failed=1; }
+    if [[ $(jq -r '.stop // false' "$report" 2>/dev/null) == true ]]; then
+      log "利用枠またはレート上限のため、残りのリポジトリは次回に回します"
+      break
+    fi
+  done
+  rm -f "$report"
+  log "全リポジトリの処理を終えました（計 $total 件）"
+  return "$failed"
+}
+
+if [[ -z $ONLY_REPO ]]; then
+  poll_all_repos
+  exit
+fi
+
+load_config "$ONLY_REPO"
+[[ -n $MAX_TASKS ]] && MAX_TASKS_PER_RUN="$MAX_TASKS"
+[[ $MAX_TASKS_PER_RUN =~ ^[0-9]+$ ]] || die "--max-tasks には整数を指定してください"
+[[ -n $REPORT_FILE ]] || log "mopu-agent $AGENT_COMMIT"
+
+processed=0
+STOP_ALL=0
+# 親の poll.sh は、この報告で残り件数と打ち切りを判断する
+write_report() {
+  [[ -n $REPORT_FILE ]] || return 0
+  jq -nc --argjson p "$processed" --argjson s "$STOP_ALL" '{processed: $p, stop: ($s == 1)}' > "$REPORT_FILE"
+}
+trap write_report EXIT
 
 source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
@@ -47,7 +123,9 @@ source "$AGENT_DIR/lib/run-task.sh"
 # タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
 discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
 
-exec 9>"$STATE_DIR/poll.lock"
+# 親から呼ばれたときは、親が開いた fd 9 をそのまま使う。開き直すと別の
+# ロックとして扱われ、親自身が握っているロックとぶつかる
+[[ -n $REPORT_FILE ]] || exec 9>"$STATE_DIR/poll.lock"
 flock -n 9 || die "別の poll.sh が実行中です"
 
 setup_app_auth
@@ -130,7 +208,7 @@ tasks=$(grep -v '^$' <<<"$tasks")
 
 if [[ -z $tasks ]]; then
   log "処理するタスクはありません"
-  printf '%s\n' "$POLL_STARTED_AT" > "$STATE_DIR/last-poll"
+  printf '%s\n' "$POLL_STARTED_AT" > "$LAST_POLL_FILE"
   exit 0
 fi
 
@@ -156,7 +234,6 @@ if (( DRY_RUN )); then
 fi
 
 # --- 実行 ---
-processed=0
 # 上限/レート制限/利用枠で打ち切ると、コメント由来のタスクは last-poll 更新後の
 # since 窓から外れて二度と検出されなくなる（issue はラベル基準で毎回全件取得する
 # ため影響しない）。打ち切った回は last-poll を更新せず、次回も同じ since から
@@ -168,7 +245,7 @@ INCOMPLETE_RUN=0
 while IFS= read -r t <&3; do
   [[ -n $t ]] || continue
   (( processed >= MAX_TASKS_PER_RUN )) && { log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達しました"; INCOMPLETE_RUN=1; break; }
-  (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; INCOMPLETE_RUN=1; break; }
+  (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; INCOMPLETE_RUN=1; STOP_ALL=1; break; }
 
   actor=$(jq -r '.actor' <<<"$t")
   if ! is_allowed_actor "$actor"; then
@@ -198,6 +275,7 @@ while IFS= read -r t <&3; do
   if ! gate; then
     log "利用枠のため以降のタスクを中止します"
     INCOMPLETE_RUN=1
+    STOP_ALL=1
     break
   fi
 
@@ -216,10 +294,11 @@ while IFS= read -r t <&3; do
   mark_task_seen "$t"
   (( processed++ ))
 done 3<<<"$tasks"
+(( RATE_LIMIT_HIT )) && STOP_ALL=1
 
 if (( INCOMPLETE_RUN )); then
   log "未処理のタスクが残っているため last-poll は更新しません（次回も同じ範囲を再走査します）"
 else
-  printf '%s\n' "$POLL_STARTED_AT" > "$STATE_DIR/last-poll"
+  printf '%s\n' "$POLL_STARTED_AT" > "$LAST_POLL_FILE"
 fi
 log "完了: $processed 件を処理しました"

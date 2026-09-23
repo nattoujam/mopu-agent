@@ -27,6 +27,7 @@ body {
 }
 header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 14px 20px;
@@ -112,6 +113,10 @@ input:disabled { opacity: .6; }
 .settings-actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
 .settings-actions .msg { margin: 0; }
 #appBox dl.kv dd { text-align: left; }
+.repo-block { border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; margin-bottom: 10px; }
+.repo-block[open] { padding-bottom: 12px; }
+.repo-block summary { cursor: pointer; padding: 10px 0; font-family: var(--mono); font-size: 13px; }
+.repo-block[data-form="new"] summary { font-family: inherit; color: var(--muted); }
 .tags {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
@@ -148,7 +153,7 @@ button.primary { background: rgba(110,168,254,.14); border-color: rgba(110,168,2
 .msg { margin-top: 8px; font-size: 12.5px; min-height: 1.2em; }
 .msg.err { color: var(--err); }
 .msg.ok { color: var(--ok); }
-.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tabs { display: flex; gap: 4px; }
 .tabs button.active { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
 .list { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
 .item {
@@ -271,6 +276,11 @@ dl.fields dd {
 <header>
   <h1>mopu-agent console</h1>
   <span class="repo" id="repo">—</span>
+  <nav class="tabs">
+    <button data-tab="runs" class="active">ポーリング履歴</button>
+    <button data-tab="tasks">タスクログ</button>
+    <button data-tab="settings">設定</button>
+  </nav>
   <span class="spacer"></span>
   <span class="pill paused" id="statePill">接続中…</span>
 </header>
@@ -307,13 +317,12 @@ dl.fields dd {
 
   <section>
     <div class="card">
-      <div class="tabs">
-        <button data-tab="runs" class="active">ポーリング履歴</button>
-        <button data-tab="tasks">タスクログ</button>
-        <button data-tab="settings">設定</button>
-      </div>
       <div class="list" id="list"><div class="empty">読み込み中…</div></div>
       <div class="settings" id="settings" hidden></div>
+    </div>
+    <div class="card" id="globalCard" hidden>
+      <h2>全体</h2>
+      <div class="settings" id="globalBox"></div>
     </div>
     <div class="card" id="appCard" hidden>
       <h2>GitHub App</h2>
@@ -418,7 +427,7 @@ function isCurrent(name) {
 
 function render() {
   const sc = status.scheduler, sp = status.spend;
-  $('repo').textContent = status.repo || '未設定';
+  $('repo').textContent = status.repos.length ? status.repos.join(', ') : '未設定';
   const pill = $('statePill');
   if (sc.current) { pill.textContent = '実行中'; pill.className = 'pill running'; }
   else if (sc.enabled) { pill.textContent = '待機中'; pill.className = 'pill idle'; }
@@ -454,7 +463,7 @@ function tick() {
 }
 
 function triggerLabel(r) {
-  if (r.retry_number) return `再実行 #${r.retry_number}`;
+  if (r.retry_number) return `再実行 ${r.retry_repo || ''}#${r.retry_number}`;
   return r.trigger === 'manual' ? '手動実行' : '定期実行';
 }
 function runBadge(run) {
@@ -568,7 +577,7 @@ async function loadTasks() {
     const cost = t.cost_usd != null ? `<span class="badge">$${t.cost_usd.toFixed(4)}</span>` : '';
     return `<div class="item ${selected && selected.kind === 'task' && selected.id === t.id ? 'selected' : ''}" data-task="${esc(t.id)}">
       <span class="when">${fmtTime(t.started_at)}</span>
-      <span class="title">${esc(t.kind || '?')} #${esc(t.number ?? '?')}</span>
+      <span class="title">${esc(t.repo || '?')} · ${esc(t.kind || '?')} #${esc(t.number ?? '?')}</span>
       ${cost}<span class="badge ${cls}">${label}</span>
     </div>`;
   }).join('');
@@ -600,7 +609,7 @@ async function openTask(id) {
   selected = { kind: 'task', id };
   const pane = $('detail');
   let data;
-  try { data = await api('/api/tasks/' + encodeURIComponent(id)); }
+  try { data = await api(`/api/tasks/${taskPath(id)}`); }
   catch (e) { pane.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   const s = data.summary;
   $('detailTitle').textContent = id;
@@ -615,14 +624,14 @@ async function openTask(id) {
       <button data-raw="stream">生ログ (stream.jsonl)</button>
       <button data-raw="stderr" ${data.stderr.trim() ? '' : 'disabled'}>stderr</button>
       <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
-      ${retryable(s) ? `<button data-retry="${s.number}">再実行</button>` : ''}
+      ${retryable(s) ? `<button data-retry="${s.number}" data-retry-repo="${esc(s.repo)}">再実行</button>` : ''}
     </div>
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {
     el.onclick = () => showRaw(id, el.dataset.raw);
   });
   pane.querySelectorAll('[data-retry]').forEach((el) => {
-    el.onclick = () => retryTask(el.dataset.retry);
+    el.onclick = () => retryTask(el.dataset.retryRepo, el.dataset.retry);
   });
   pane.querySelectorAll('[data-line]').forEach((el) => {
     el.onclick = () => showRawLine(id, el.dataset.line);
@@ -651,7 +660,7 @@ function renderEvent(e) {
 
 async function showRawLine(id, line) {
   let data;
-  try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw?line=${encodeURIComponent(line)}`); }
+  try { data = await api(`/api/tasks/${taskPath(id)}/raw?line=${encodeURIComponent(line)}`); }
   catch (e) { note(e.message, 'err'); return; }
   let text = data.text;
   try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { /* 壊れた行はそのまま出す */ }
@@ -664,17 +673,21 @@ function retryable(s) {
   return s.number != null && ['error', 'aborted', 'incomplete'].includes(s.state);
 }
 
-async function retryTask(number) {
+function taskPath(id) {
+  return id.split('/').map(encodeURIComponent).join('/');
+}
+
+async function retryTask(repo, number) {
   try {
-    status = await postJson('/api/run', { retry: Number(number) });
+    status = await postJson('/api/run', { repo, retry: Number(number) });
     render(); renderRuns();
-    note(`#${number} を再実行します`, 'ok');
+    note(`${repo}#${number} を再実行します`, 'ok');
   } catch (e) { note(e.message, 'err'); }
 }
 
 async function showRaw(id, which) {
   let data;
-  try { data = await api(`/api/tasks/${encodeURIComponent(id)}/raw`); }
+  try { data = await api(`/api/tasks/${taskPath(id)}/raw`); }
   catch (e) { note(e.message, 'err'); return; }
   const file = { stderr: 'stderr.log', setup: 'setup.log' }[which] || 'stream.jsonl';
   openModal(`${id}/${file}`, data[which] || '(空)');
@@ -730,6 +743,7 @@ function switchTab(name) {
   $('list').hidden = settings;
   $('detailCard').hidden = settings;
   $('settings').hidden = !settings;
+  $('globalCard').hidden = !settings;
   $('appCard').hidden = !settings;
   if (settings) { loadSettings(); return; }
   listSig = null;
@@ -749,8 +763,8 @@ async function loadSettings() {
   renderSettings(data);
 }
 
-function fieldHtml(scope, key, d, value) {
-  const id = `f-${scope}-${key}`;
+function fieldHtml(prefix, scope, key, d, value) {
+  const id = `f-${prefix}-${key}`;
   let input;
   if (d.type === 'list') {
     input = `<div class="tags" id="${id}" data-pattern="${esc(d.item_pattern || '')}">
@@ -818,38 +832,122 @@ function bindTags(root) {
   });
 }
 
-function readField(scope, key, d) {
+function readField(prefix, key, d) {
   if (d.type === 'list') {
-    const box = $(`f-${scope}-${key}`);
+    const box = $(`f-${prefix}-${key}`);
     commitTags(box);
     return [...box.querySelectorAll('.tag')].map((t) => t.dataset.value);
   }
-  const raw = $(`f-${scope}-${key}`).value;
+  const raw = $(`f-${prefix}-${key}`).value;
   if (d.type === 'integer' || d.type === 'number') return raw.trim() === '' ? null : Number(raw);
   return raw;
 }
 
+let settingsFlash = null;
+
+function readSection(prefix, defs) {
+  return Object.fromEntries(Object.entries(defs).map(([k, d]) => [k, readField(prefix, k, d)]));
+}
+
+function repoFormHtml(prefix, schema, values) {
+  return Object.entries(schema.repo).map(([k, d]) => fieldHtml(prefix, 'repo', k, d, values[k])).join('');
+}
+
+function actionsHtml(key, buttons) {
+  const flash = settingsFlash && settingsFlash.key === key ? settingsFlash : null;
+  return `<div class="settings-actions">${buttons}<span class="msg ${flash ? flash.cls : ''}" data-msg="${esc(key)}">${esc(flash ? flash.text : '')}</span></div>`;
+}
+
 function renderSettings(data) {
-  const { schema } = data;
-  const repoName = data.repo.name;
+  const { schema, repos } = data;
+  const template = Object.fromEntries(Object.entries(schema.repo).map(([k, d]) => [k, d.default]));
+  if (repos.length) template.allowed_actors = repos[0].values.allowed_actors;
   $('settings').innerHTML = `
     <h3>リポジトリ</h3>
-    <div class="field" data-field="repo.name">
-      <label for="f-repo-name">対象リポジトリ</label>
-      <input type="text" id="f-repo-name" value="${esc(repoName || '')}" placeholder="owner/repo" autocomplete="off" ${repoName ? 'disabled' : ''}>
-      <div class="hint" data-help="${repoName ? '登録後は変更できない' : ''}">${repoName ? '登録後は変更できない' : ''}</div>
-    </div>
-    ${Object.entries(schema.repo).map(([k, d]) => fieldHtml('repo', k, d, data.repo.values[k])).join('')}
-    <h3>全体</h3>
-    ${Object.entries(schema.global).map(([k, d]) => fieldHtml('global', k, d, data.global[k])).join('')}
-    <div class="settings-actions">
-      <button class="primary" id="saveSettings">保存</button>
-      <span class="msg" id="settingsMsg"></span>
-    </div>
-    <div class="hint">保存した設定は次回のポーリングから反映される。ラベル設定のない新しいリポジトリでは、先に ./setup.sh でラベルを作ること。</div>`;
-  $('saveSettings').onclick = () => saveSettings(schema);
+    ${repos.map((r, i) => `
+      <details class="repo-block" data-form="repo:${esc(r.name)}" ${repos.length === 1 ? 'open' : ''}>
+        <summary>${esc(r.name)}</summary>
+        ${repoFormHtml(`r${i}`, schema, r.values)}
+        ${actionsHtml(`repo:${r.name}`, `<button class="primary" data-save-repo="${i}">保存</button><button class="danger" data-delete-repo="${i}">設定から外す</button>`)}
+      </details>`).join('')}
+    <details class="repo-block" data-form="new" ${repos.length ? '' : 'open'}>
+      <summary>リポジトリを追加</summary>
+      <div class="field" data-field="repo.name">
+        <label for="f-new-name">リポジトリ</label>
+        <input type="text" id="f-new-name" placeholder="owner/repo" autocomplete="off" spellcheck="false">
+        <div class="hint" data-help="追加したら ./setup.sh --repo owner/repo でラベルを作ること">追加したら ./setup.sh --repo owner/repo でラベルを作ること</div>
+      </div>
+      ${repoFormHtml('new', schema, template)}
+      ${actionsHtml('new', '<button class="primary" id="addRepo">追加</button>')}
+    </details>
+    <div class="hint">保存した設定は次回のポーリングから反映される。</div>`;
+  $('globalBox').innerHTML = `
+    <div data-form="global">
+      ${Object.entries(schema.global).map(([k, d]) => fieldHtml('global', 'global', k, d, data.global[k])).join('')}
+      ${actionsHtml('global', '<button class="primary" id="saveGlobal">保存</button>')}
+    </div>`;
+  settingsFlash = null;
+  $('saveGlobal').onclick = () => submitSettings('global', '/api/settings/global', () => ({ values: readSection('global', schema.global) }), '保存しました');
+  $('addRepo').onclick = () => submitSettings('new', '/api/settings/repo',
+    () => ({ name: $('f-new-name').value.trim(), values: readSection('new', schema.repo), create: true }), '追加しました', (b) => `repo:${b.name}`);
+  document.querySelectorAll('[data-save-repo]').forEach((btn) => {
+    const r = repos[Number(btn.dataset.saveRepo)];
+    btn.onclick = () => submitSettings(`repo:${r.name}`, '/api/settings/repo',
+      () => ({ name: r.name, values: readSection(`r${btn.dataset.saveRepo}`, schema.repo) }), '保存しました');
+  });
+  document.querySelectorAll('[data-delete-repo]').forEach((btn) => {
+    btn.onclick = () => deleteRepo(repos[Number(btn.dataset.deleteRepo)].name);
+  });
   bindTags($('settings'));
+  bindTags($('globalBox'));
   loadApp();
+}
+
+function formOf(key) {
+  return document.querySelector(`[data-form="${CSS.escape(key)}"]`);
+}
+
+function showMsg(key, text, cls) {
+  const el = document.querySelector(`[data-msg="${CSS.escape(key)}"]`);
+  if (el) { el.textContent = text; el.className = `msg ${cls}`; }
+}
+
+async function submitSettings(key, url, build, okText, flashKey) {
+  const form = formOf(key);
+  form.querySelectorAll('.field.invalid').forEach((el) => setFieldError(el, ''));
+  const body = build();
+  const pending = form.querySelector('.field.invalid');
+  if (pending) {
+    pending.scrollIntoView({ block: 'center' });
+    showMsg(key, '形式が正しくない項目があります', 'err');
+    return;
+  }
+  try {
+    const data = await postJson(url, body);
+    settingsFlash = { key: flashKey ? flashKey(body) : key, text: okText, cls: 'ok' };
+    renderSettings(data);
+    const saved = formOf(settingsFlash ? settingsFlash.key : key);
+    if (saved && saved.tagName === 'DETAILS') saved.open = true;
+    refresh();
+  } catch (e) {
+    const field = e.data && e.data.field && form.querySelector(`[data-field="${e.data.field}"]`);
+    if (field) {
+      setFieldError(field, e.message);
+      field.scrollIntoView({ block: 'center' });
+    }
+    showMsg(key, e.message, 'err');
+  }
+}
+
+async function deleteRepo(name) {
+  if (!confirm(`${name} を設定から外します。次回のポーリングから対象外になります。\nログや処理済みコメントの記録は残り、同じリポジトリを追加し直すと引き継がれます。よろしいですか？`)) return;
+  try {
+    const data = await api('/api/settings/repo', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    });
+    renderSettings(data);
+    refresh();
+  } catch (e) { showMsg(`repo:${name}`, e.message, 'err'); }
 }
 
 async function loadApp() {
@@ -933,34 +1031,6 @@ async function deleteApp() {
   }
 }
 
-async function saveSettings(schema) {
-  document.querySelectorAll('#settings .field.invalid').forEach((el) => setFieldError(el, ''));
-  const collect = (scope) => Object.fromEntries(Object.entries(schema[scope]).map(([k, d]) => [k, readField(scope, k, d)]));
-  const body = { global: collect('global'), repo: { name: $('f-repo-name').value.trim(), values: collect('repo') } };
-  const msg = $('settingsMsg');
-  const pending = document.querySelector('#settings .field.invalid');
-  if (pending) {
-    pending.scrollIntoView({ block: 'center' });
-    msg.textContent = '形式が正しくない項目があります';
-    msg.className = 'msg err';
-    return;
-  }
-  try {
-    renderSettings(await postJson('/api/settings', body));
-    $('settingsMsg').textContent = '保存しました';
-    $('settingsMsg').className = 'msg ok';
-    refresh();
-  } catch (e) {
-    const field = e.data && e.data.field && document.querySelector(`[data-field="${e.data.field}"]`);
-    if (field) {
-      field.classList.add('invalid');
-      field.querySelector('.hint').textContent = e.message;
-      field.scrollIntoView({ block: 'center' });
-    }
-    msg.textContent = e.message;
-    msg.className = 'msg err';
-  }
-}
 
 refresh();
 setInterval(refresh, 2000);

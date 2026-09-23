@@ -22,7 +22,6 @@ SETTINGS_FILE = STATE_DIR / "settings.json"
 SCHEMA = json.loads((AGENT_DIR / "settings" / "schema.json").read_text())
 RUNS_FILE = STATE_DIR / "console-runs.jsonl"
 SPEND_FILE = STATE_DIR / "spend.jsonl"
-LAST_POLL_FILE = STATE_DIR / "last-poll"
 POLL_LOCK = STATE_DIR / "poll.lock"
 SECRETS_DIR = STATE_DIR / "secrets"
 APP_KEY_FILE = SECRETS_DIR / "github-app.pem"
@@ -127,13 +126,13 @@ def summarize_run_log(path):
     # git を引き直さずログから拾う。コンソールが読む時点では作業ツリーが
     # 変わっているかもしれず、その実行が名乗った SHA と食い違うため
     commit = re.search(r"mopu-agent (\S+)", plain)
-    found = re.search(r"(\d+)\s*件のタスクを検出", plain)
-    done = re.search(r"完了:\s*(\d+)\s*件", plain)
+    found = [int(n) for n in re.findall(r"(\d+)\s*件のタスクを検出", plain)]
+    done = [int(n) for n in re.findall(r"完了:\s*(\d+)\s*件", plain)]
     idle = "処理するタスクはありません" in plain
     return {
         "commit": commit.group(1) if commit else None,
-        "detected": int(found.group(1)) if found else (0 if idle else None),
-        "processed": int(done.group(1)) if done else None,
+        "detected": sum(found) if found else (0 if idle else None),
+        "processed": sum(done) if done else None,
         "warnings": sum(1 for m in ANSI_RE.finditer(text) if "33" in m.group(1).split(";")),
         "errors": sum(1 for m in ANSI_RE.finditer(text) if "31" in m.group(1).split(";")),
     }
@@ -160,9 +159,20 @@ def update_settings(mutate):
         return data
 
 
-def configured_repo(settings):
-    names = sorted(((settings or {}).get("repos") or {}).keys())
-    return names[0] if names else None
+def repo_names(settings):
+    return sorted(((settings or {}).get("repos") or {}).keys())
+
+
+def repo_slug(name):
+    return name.replace("/", "__")
+
+
+def last_polls(names):
+    polls = {}
+    for name in names:
+        value = read_text(STATE_DIR / "repos" / repo_slug(name) / "last-poll").strip()
+        polls[name] = value or None
+    return polls
 
 
 def effective_values(defs, saved):
@@ -309,15 +319,14 @@ def delete_app():
 
 
 def settings_view(settings):
-    repo = configured_repo(settings)
+    repos = (settings or {}).get("repos") or {}
     return {
         "schema": SCHEMA,
-        "configured": repo is not None,
+        "configured": bool(repos),
         "global": effective_values(SCHEMA["global"], (settings or {}).get("global")),
-        "repo": {
-            "name": repo,
-            "values": effective_values(SCHEMA["repo"], ((settings or {}).get("repos") or {}).get(repo)),
-        },
+        "repos": [
+            {"name": name, "values": effective_values(SCHEMA["repo"], repos[name])} for name in sorted(repos)
+        ],
     }
 
 
@@ -389,12 +398,12 @@ class Scheduler:
             save_console_state({"interval_seconds": self.interval, "enabled": self.enabled})
         self.wake.set()
 
-    def request_run(self, retry_number=None):
+    def request_run(self, retry=None):
         with self.lock:
             if self.current is not None:
                 return False
             self.manual_requested = True
-            self.manual_retry = retry_number
+            self.manual_retry = retry
         self.wake.set()
         return True
 
@@ -404,33 +413,37 @@ class Scheduler:
 
     def _loop(self):
         while not self.stopping.is_set():
-            trigger = retry_number = None
+            trigger = retry = None
             with self.lock:
                 if self.manual_requested:
                     self.manual_requested = False
-                    retry_number = self.manual_retry
+                    retry = self.manual_retry
                     self.manual_retry = None
-                    trigger = "retry" if retry_number else "manual"
+                    trigger = "retry" if retry else "manual"
                 elif self.enabled and self.next_run_at and time.time() >= self.next_run_at:
                     trigger = "schedule"
             if trigger:
-                self._execute(trigger, retry_number)
+                self._execute(trigger, retry)
                 with self.lock:
                     self.next_run_at = time.time() + self.interval if self.enabled else None
                 continue
             self.wake.wait(1.0)
             self.wake.clear()
 
-    def _execute(self, trigger, retry_number=None):
+    def _execute(self, trigger, retry=None):
         argv = [str(AGENT_DIR / "poll.sh")]
-        if retry_number:
-            argv += ["--retry", str(retry_number)]
+        retry_repo, retry_number = retry or (None, None)
+        if retry:
+            argv += ["--repo", retry_repo, "--retry", str(retry_number)]
         RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
         name = f"poll-{datetime.now():%Y%m%d-%H%M%S}.log"
         path = RUN_LOG_DIR / name
         started = time.time()
         with self.lock:
-            self.current = {"log": name, "trigger": trigger, "started_at": started, "retry_number": retry_number}
+            self.current = {
+                "log": name, "trigger": trigger, "started_at": started,
+                "retry_number": retry_number, "retry_repo": retry_repo,
+            }
         exit_code = None
         try:
             with path.open("wb") as fh:
@@ -456,6 +469,7 @@ class Scheduler:
             "log": name,
             "trigger": trigger,
             "retry_number": retry_number,
+            "retry_repo": retry_repo,
             "started_at": started,
             "finished_at": time.time(),
             "duration_s": round(time.time() - started, 1),
@@ -489,8 +503,22 @@ _task_cache = {}
 def task_ids():
     if not LOGS_DIR.is_dir():
         return []
-    dirs = [d for d in LOGS_DIR.iterdir() if d.is_dir() and d.name != "console"]
+    dirs = [
+        d
+        for repo in LOGS_DIR.iterdir()
+        if repo.is_dir() and repo.name != "console"
+        for d in repo.iterdir()
+        if d.is_dir()
+    ]
     return sorted(dirs, key=lambda d: d.name.rsplit("-", 2)[-2:], reverse=True)
+
+
+def task_dir_of(name):
+    parts = name.split("/")
+    if len(parts) != 2 or not all(ID_RE.match(part) for part in parts) or parts[0] == "console":
+        return None
+    target = LOGS_DIR / parts[0] / parts[1]
+    return target if target.is_dir() else None
 
 
 def task_summary(path):
@@ -500,11 +528,13 @@ def task_summary(path):
         key = (stat.st_mtime_ns, stat.st_size)
     except OSError:
         key = None
-    cached = _task_cache.get(path.name)
+    task_id = f"{path.parent.name}/{path.name}"
+    cached = _task_cache.get(task_id)
     if cached and cached[0] == key:
         return cached[1]
 
-    summary = {"id": path.name, "state": "unknown"}
+    owner, _, repo = path.parent.name.partition("__")
+    summary = {"id": task_id, "repo": f"{owner}/{repo}", "state": "unknown"}
     m = re.match(r"^(issue|comment)-(\d+)-(\d{8})-(\d{6})$", path.name)
     if m:
         summary["kind"] = m.group(1)
@@ -530,7 +560,7 @@ def task_summary(path):
         # stream.jsonl が無いのはエージェントを起動する前に打ち切られたとき
         # （依存の準備の失敗、worktree の準備の失敗）
         summary["state"] = "incomplete" if stream.exists() else "aborted"
-    _task_cache[path.name] = (key, summary)
+    _task_cache[task_id] = (key, summary)
     return summary
 
 
@@ -754,11 +784,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "ログがありません")
             return self._json({"log": name, "lines": strip_ansi_lines(read_text(target, 512 * 1024))})
         if path.startswith("/api/tasks/") and path.endswith("/raw"):
-            name = path[len("/api/tasks/"):-len("/raw")]
-            if not ID_RE.match(name):
-                return self._error(400, "不正なタスク ID です")
-            target = LOGS_DIR / name
-            if not target.is_dir() or name == "console":
+            target = task_dir_of(path[len("/api/tasks/"):-len("/raw")])
+            if target is None:
                 return self._error(404, "タスクログがありません")
             wanted = parse_qs(urlparse(self.path).query).get("line", [None])[0]
             if wanted is None:
@@ -778,11 +805,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, f"{lineno} 行目はありません（全 {len(lines)} 行）")
             return self._json({"line": lineno, "text": lines[lineno - 1]})
         if path.startswith("/api/tasks/"):
-            name = path[len("/api/tasks/"):]
-            if not ID_RE.match(name):
-                return self._error(400, "不正なタスク ID です")
-            target = LOGS_DIR / name
-            if not target.is_dir() or name == "console":
+            target = task_dir_of(path[len("/api/tasks/"):])
+            if target is None:
                 return self._error(404, "タスクログがありません")
             return self._json(task_detail(target))
         return self._error(404, "not found")
@@ -799,8 +823,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._reject(413, "本文が大きすぎます")
         except ValueError:
             return self._error(400, "JSON を解釈できません")
-        if path == "/api/settings":
-            return self._save_settings(body)
+        if path == "/api/settings/global":
+            return self._save_global(body)
+        if path == "/api/settings/repo":
+            return self._save_repo(body)
         if path == "/api/github-app":
             return self._register_app(body)
         if path == "/api/scheduler":
@@ -818,7 +844,7 @@ class Handler(BaseHTTPRequestHandler):
             SCHEDULER.update(interval=interval, enabled=enabled)
             return self._json(self._status())
         if path == "/api/run":
-            retry_number = None
+            retry = None
             if body.get("retry") is not None:
                 try:
                     retry_number = int(body["retry"])
@@ -826,7 +852,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, "retry は Issue 番号（整数）で指定してください")
                 if retry_number < 1:
                     return self._error(400, "retry は 1 以上の整数で指定してください")
-            if not SCHEDULER.request_run(retry_number):
+                try:
+                    known = repo_names(load_settings())
+                except ValueError:
+                    return self._error(500, "state/settings.json が壊れています")
+                if body.get("repo") not in known:
+                    return self._error(400, "再実行するリポジトリが設定にありません")
+                retry = (body["repo"], retry_number)
+            if not SCHEDULER.request_run(retry):
                 return self._error(409, "すでにポーリングが実行中です")
             return self._json(self._status())
         return self._error(404, "not found")
@@ -837,12 +870,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._write_allowed():
             return
         try:
-            self._body()
+            body = self._body()
         except BodyTooLarge:
             return self._reject(413, "本文が大きすぎます")
         except ValueError:
             return self._error(400, "JSON を解釈できません")
-        if unquote(urlparse(self.path).path) != "/api/github-app":
+        path = unquote(urlparse(self.path).path)
+        if path == "/api/settings/repo":
+            return self._delete_repo(body)
+        if path != "/api/github-app":
             return self._error(404, "not found")
         try:
             return self._json(app_view(delete_app()))
@@ -865,48 +901,88 @@ class Handler(BaseHTTPRequestHandler):
         except AppError as exc:
             return self._json({"error": str(exc), "field": "app.private_key"}, exc.code)
 
-    def _save_settings(self, body):
+    def _save_global(self, body):
         if not isinstance(body, dict):
             return self._error(400, "JSON オブジェクトで指定してください")
-        repo = body.get("repo") or {}
-        name = str(repo.get("name") or "").strip()
-        if not REPO_RE.match(name):
-            return self._json({"error": "リポジトリは owner/repo の形で指定してください", "field": "repo.name"}, 400)
         try:
-            global_values = validate_section("global", SCHEMA["global"], body.get("global") or {})
-            repo_values = validate_section("repo", SCHEMA["repo"], repo.get("values") or {})
+            values = validate_section("global", SCHEMA["global"], body.get("values") or {})
         except SettingsError as exc:
             return self._json({"error": str(exc), "field": exc.field}, 400)
-        try:
-            current = configured_repo(load_settings())
-        except ValueError:
-            return self._error(500, "state/settings.json が壊れています")
-        if current and current != name:
-            return self._json(
-                {"error": f"リポジトリは変更できません（現在: {current}）", "field": "repo.name"}, 400
-            )
 
         def mutate(data):
             data["version"] = 1
-            data["global"] = global_values
-            data["repos"] = {name: repo_values}
+            data["global"] = values
 
-        return self._json(settings_view(update_settings(mutate)))
+        try:
+            return self._json(settings_view(update_settings(mutate)))
+        except ValueError:
+            return self._error(500, "state/settings.json が壊れています")
+
+    def _save_repo(self, body):
+        if not isinstance(body, dict):
+            return self._error(400, "JSON オブジェクトで指定してください")
+        name = str(body.get("name") or "").strip()
+        if not REPO_RE.match(name):
+            return self._json({"error": "リポジトリは owner/repo の形で指定してください", "field": "repo.name"}, 400)
+        try:
+            values = validate_section("repo", SCHEMA["repo"], body.get("values") or {})
+        except SettingsError as exc:
+            return self._json({"error": str(exc), "field": exc.field}, 400)
+        create = body.get("create") is True
+        conflict = []
+
+        def mutate(data):
+            repos = data.setdefault("repos", {})
+            if create == (name in repos):
+                conflict.append(name)
+                return
+            data["version"] = 1
+            repos[name] = values
+
+        try:
+            saved = update_settings(mutate)
+        except ValueError:
+            return self._error(500, "state/settings.json が壊れています")
+        if conflict:
+            message = "すでに登録されています" if create else "登録されていないリポジトリです"
+            return self._json({"error": f"{message}: {name}", "field": "repo.name"}, 409)
+        return self._json(settings_view(saved))
+
+    def _delete_repo(self, body):
+        name = body.get("name") if isinstance(body, dict) else None
+        missing = []
+
+        def mutate(data):
+            repos = data.get("repos") or {}
+            if name not in repos:
+                missing.append(name)
+                return
+            del repos[name]
+
+        try:
+            saved = update_settings(mutate)
+        except ValueError:
+            return self._error(500, "state/settings.json が壊れています")
+        if missing:
+            return self._error(404, f"登録されていないリポジトリです: {name}")
+        return self._json(settings_view(saved))
 
     def _status(self):
         status = SCHEDULER.snapshot()
         try:
-            repo = configured_repo(load_settings())
+            repos = repo_names(load_settings())
         except ValueError:
-            repo = None
+            repos = []
+        polls = last_polls(repos)
         return {
             "now": time.time(),
-            "repo": repo,
-            "configured": repo is not None,
+            "repos": repos,
+            "configured": bool(repos),
             "scheduler": status,
             "poll": {
                 "lock_held": poll_lock_held(),
-                "last_poll_at": read_text(LAST_POLL_FILE).strip() or None,
+                "last_poll_at": max((v for v in polls.values() if v), default=None),
+                "last_polls": polls,
             },
             "spend": spend_summary(),
             "limits": {"min_interval": MIN_INTERVAL, "max_interval": MAX_INTERVAL},

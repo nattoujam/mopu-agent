@@ -19,10 +19,10 @@ GitHub の認証情報はエージェントに渡らない。
 ### 作業ディレクトリの構成
 
 ```
-worktrees/<task-id>/                        ← 書き込みを許す範囲
-worktrees/<task-id>/repo/                   ← git worktree（エージェントの cwd）
-worktrees/<task-id>/.mopu-agent-plan.json   ← タスク分解の受け渡し用
-worktrees/<task-id>/.npm-cache, .cache/     ← npm / XDG のキャッシュ
+worktrees/<owner>__<repo>/<task-id>/                        ← 書き込みを許す範囲
+worktrees/<owner>__<repo>/<task-id>/repo/                   ← git worktree（エージェントの cwd）
+worktrees/<owner>__<repo>/<task-id>/.mopu-agent-plan.json   ← タスク分解の受け渡し用
+worktrees/<owner>__<repo>/<task-id>/.npm-cache, .cache/     ← npm / XDG のキャッシュ
 ```
 
 plan とキャッシュをリポジトリの外に置くことで、`git status` の結果をそのまま
@@ -36,7 +36,7 @@ worktree のコミットは共有の `repos/<slug>/.git` に書かれるので�
 
 - `repos/<slug>/.git/hooks`
 - `repos/<slug>/.git/config`
-- `worktrees/<task-id>/repo/.git`（gitdir を指すファイル。書き換えると別の hooks を差し込める）
+- `worktrees/<owner>__<repo>/<task-id>/repo/.git`（gitdir を指すファイル。書き換えると別の hooks を差し込める）
 
 ### 通信
 
@@ -100,7 +100,7 @@ GitHub App を使わない構成では、`gh` の認証情報（`~/.config/gh`�
 ## 依存の準備
 
 `SETUP_CMD` は任意で、ホスト権限で worktree 作成の直後に実行される。出力は
-`logs/<task-id>/setup.log` に残り、失敗したときは Issue にも返る。
+`logs/<owner>__<repo>/<task-id>/setup.log` に残り、失敗したときは Issue にも返る。
 
 ## セキュリティ
 

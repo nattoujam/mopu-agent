@@ -52,7 +52,7 @@ export type Config = {
   allowedActors: string;
   branchPrefix: string;
   commentMarker: string;
-  stateDir: string;
+  lastPollFile: string;
   seenFile: string;
 };
 
@@ -167,7 +167,7 @@ const loadConfig = (): Config => {
     allowedActors: need("ALLOWED_ACTORS"),
     branchPrefix: need("BRANCH_PREFIX"),
     commentMarker: need("COMMENT_MARKER"),
-    stateDir: need("STATE_DIR"),
+    lastPollFile: need("LAST_POLL_FILE"),
     seenFile: need("SEEN_FILE"),
   };
 };
@@ -294,7 +294,7 @@ const fetchComments = (cfg: Config, since: string): RawComment[] => {
 // セッションで順に処理しても後のセッションが前の変更を読み直すだけで、
 // 指示どうしの矛盾も見つけられない
 const discoverComments = (cfg: Config): void => {
-  const lastPollFile = `${cfg.stateDir}/last-poll`;
+  const lastPollFile = cfg.lastPollFile;
   const lastPoll = existsSync(lastPollFile) ? readFileSync(lastPollFile, "utf8").trim() : null;
   const since = computeSince(lastPoll, new Date());
 
@@ -394,7 +394,7 @@ const markSeen = (id: string, cfg: Config): void => {
 
 // 初回実行時に過去のコメントを一斉処理しないため
 const initSeenBaseline = (cfg: Config): void => {
-  const lastPollFile = `${cfg.stateDir}/last-poll`;
+  const lastPollFile = cfg.lastPollFile;
   if (existsSync(lastPollFile)) return;
   writeFileSync(lastPollFile, `${utcStamp(new Date())}\n`);
   log("初回実行のため、これ以降に投稿されたコメントのみを対象にします");
