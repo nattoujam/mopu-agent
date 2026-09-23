@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # エージェントが workflow_dispatch を起動するための唯一の入口。sandbox の外
 # （excludedCommands）で動くので、引数は許可リストと形式で検証し、ref は
-# 親が export した MOPU_BRANCH に固定する。リポジトリは MOPU_TASK_DIR の置き場所から決める
+# 親が export した MOPU_BRANCH に固定する
 set -euo pipefail
 
 usage() { echo "使い方: dispatch-workflow <workflow.yml> [key=value ...]" >&2; exit 2; }

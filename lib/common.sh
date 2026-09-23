@@ -69,8 +69,7 @@ settings_env() {
   ' "$SETTINGS_FILE"
 }
 
-# worktrees/<owner>__<repo>/<task-id> からリポジトリ名を返す。owner には _ が
-# 使えないので、最初の __ で分ければ repo 名に __ が入っていても取り違えない
+# owner には _ が使えないので、最初の __ で分ければ repo 名に __ が入っていても取り違えない
 repo_of_task_dir() {
   local dir rel slug
   dir=$(realpath -m -- "$1")
@@ -132,7 +131,6 @@ load_global_config() {
   export AGENT_COMMIT STATE_DIR SPEND_FILE
 }
 
-# 使い方: load_config [owner/repo]
 load_config() {
   local repo="${1:-}" names env
   load_global_config

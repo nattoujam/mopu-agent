@@ -46,9 +46,6 @@ done
 
 require_tools
 
-# 利用枠はリポジトリをまたいで共有なので、1 回の上限も全体で数える。先頭が
-# 毎回同じだと、タスクの多いリポジトリだけで上限を使い切ってしまうため、
-# 開始位置を実行ごとにずらす
 poll_all_repos() {
   local -a repos
   local n start i repo report rc processed total=0 remaining failed=0
@@ -108,7 +105,6 @@ load_config "$ONLY_REPO"
 
 processed=0
 STOP_ALL=0
-# 親の poll.sh は、この報告で残り件数と打ち切りを判断する
 write_report() {
   [[ -n $REPORT_FILE ]] || return 0
   jq -nc --argjson p "$processed" --argjson s "$STOP_ALL" '{processed: $p, stop: ($s == 1)}' > "$REPORT_FILE"

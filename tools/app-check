@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# GitHub App の ID と秘密鍵の組を検証し、{slug, fingerprint} を JSON で返す。
-# 終了コード 3: 鍵を RSA 秘密鍵として読めない / 4: GitHub がこの組を受け付けない
 set -euo pipefail
 
 (( $# == 2 )) || { echo "使い方: app-check <App ID> <秘密鍵のパス>" >&2; exit 2; }

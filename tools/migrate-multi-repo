@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# state / logs / worktrees を、リポジトリごとのディレクトリに分ける。1 回だけ実行する
 set -euo pipefail
 
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -34,7 +34,6 @@ cp config.env.example config.env   # コンソールの待受先など（既定�
 `tools/migrate-config` を 1 回実行すると移行できる。GitHub App の鍵も取り込む（元のファイルは `config.env.bak` に残る）。
 
 複数リポジトリに対応する前から使っていた場合は、poll とコンソールを止めて `tools/migrate-multi-repo` を 1 回実行する。
-`state/` の会話 ID や処理済みコメント、`logs/` と `worktrees/` のタスクを、リポジトリごとのディレクトリへ移す。
 
 ## 使い方
 
@@ -86,8 +85,6 @@ PR で指示した場合も、ブランチ・ラベル・sub issue は元 Issue 
 | `--task <番号>` | 指定した Issue だけを処理（ラベル不要、同時進行ゲートも無視） |
 | `--retry <番号>` | 失敗したタスクを、残った作業ツリーと会話ごと引き継いで再開 |
 | `--ignore-budget` | 利用枠のゲートを無視 |
-
-リポジトリが複数あるとき、`--task` と `--retry` には `--repo` も要る。
 
 `--retry` は前回のタスクをそのまま再現する。コメントでトリガーしたタスクなら、
 指示だったコメント本文も引き継がれる（`logs/<owner>__<repo>/<タスクID>/task.json` に控えてある）。

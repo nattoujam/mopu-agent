@@ -96,10 +96,5 @@ journalctl --user -u mopu-console -f
 そのため loopback 以外での待受は既定で拒否する。公開する場合は `CONSOLE_ALLOW_REMOTE=1` を設定し、
 前段のリバースプロキシで必ず認証をかけること。
 
-ブラウザで開いた無関係なページからの操作も受け付けない。
-
-- `Host` が `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>` 以外のリクエストは 403
-  （`CONSOLE_ALLOW_REMOTE=1` のときは検査しない）
-- 操作系の API（POST）は `Content-Type: application/json` 以外を 415、`Origin` が `Host` と
-  食い違うものを 403 で拒否する。前段のプロキシで `Host` を書き換えると画面から操作できなくなるので、
-  `Host` はそのまま転送すること
+ブラウザで開いた無関係なページからの操作は受け付けない。`Origin` と `Host` を照合しているので、
+前段のプロキシで `Host` を書き換えると画面から操作できなくなる。`Host` はそのまま転送すること。
