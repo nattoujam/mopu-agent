@@ -626,6 +626,7 @@ async function openTask(id) {
       <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
       ${retryable(s) ? `<button data-retry="${s.number}" data-retry-repo="${esc(s.repo)}">再実行</button>` : ''}
     </div>
+    ${s.failure ? `<div class="msg err" style="margin:0 0 12px">${esc(s.failure)}</div>` : ''}
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {
     el.onclick = () => showRaw(id, el.dataset.raw);

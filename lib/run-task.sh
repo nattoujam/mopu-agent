@@ -328,9 +328,33 @@ invoke_agent() {
   ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
 }
 
+TASK_OUTCOME_FILE=""
+
+record_outcome() {
+  [[ -n $TASK_OUTCOME_FILE ]] || return 0
+  jq -nc --argjson ok "$1" --arg reason "${2:-}" \
+    '{ok: $ok} + (if $reason == "" then {} else {reason: $reason} end)' > "$TASK_OUTCOME_FILE"
+}
+
+fail_task() {
+  err "[$1] $2"
+  record_outcome false "$2"
+}
+
 # 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文>
 # コメントの内容と返信先は CURRENT_TASK_JSON の comments から読む
 run_task() {
+  local rc=0
+  TASK_OUTCOME_FILE=""
+  run_task_body "$@" || rc=$?
+  if [[ -n $TASK_OUTCOME_FILE && ! -f $TASK_OUTCOME_FILE ]]; then
+    if (( rc == 0 )); then record_outcome true; else record_outcome false "終了コード $rc で中断しました"; fi
+  fi
+  TASK_OUTCOME_FILE=""
+  return "$rc"
+}
+
+run_task_body() {
   local kind="$1" number="$2" title="$3" body="$4"
   local task_id
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
@@ -357,6 +381,7 @@ run_task() {
   rm -f "$replies_file"
   local log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
+  TASK_OUTCOME_FILE="$log_dir/outcome.json"
   [[ -n ${CURRENT_TASK_JSON:-} ]] \
     && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \
       > "$log_dir/$TASK_FILE_NAME"
@@ -379,7 +404,7 @@ run_task() {
     create_workspace "$branch" "$task_dir" && ok=1
   fi
   if (( ! ok )); then
-    err "[$task_id] worktree の準備に失敗しました"
+    fail_task "$task_id" "worktree の準備に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
     post_report "エージェントの作業ツリー準備に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
     return 1
@@ -390,7 +415,7 @@ run_task() {
     log "[$task_id] 依存を準備します: $SETUP_CMD"
     run_setup "$wt" "$setup_log" || setup_rc=$?
     if (( setup_rc )); then
-      err "[$task_id] 依存の準備に失敗しました (exit=$setup_rc)"
+      fail_task "$task_id" "依存の準備に失敗しました (exit=$setup_rc)"
       [[ -s $setup_log ]] && warn "$(tail -20 "$setup_log")"
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf '依存の準備コマンドが失敗しました (exit=%s%s)。\n\n```\n%s\n```\n\n```\n%s\n```\n\nログ: `%s`' \
@@ -513,7 +538,7 @@ run_task() {
   fi
 
   if (( rc != 0 )) || [[ $is_error == true ]]; then
-    err "[$task_id] 失敗 (exit=$rc, is_error=$is_error)"
+    fail_task "$task_id" "エージェントの実行に失敗しました (exit=$rc, is_error=$is_error)"
     local detail
     detail=$(tail -20 "$log_dir/stderr.log")
     set_labels "$number" "$LABEL_FAILED"
@@ -536,7 +561,7 @@ run_task() {
 
   if [[ $(git -C "$wt" rev-parse HEAD) == "$head_before" ]]; then
     if [[ -n $(git -C "$wt" status --porcelain) ]]; then
-      err "[$task_id] コミットされていない変更が残っています"
+      fail_task "$task_id" "コミットされていない変更が残っています"
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
         "${result:-（応答なし）}" "$(agent_relpath "$wt")")"
@@ -555,7 +580,7 @@ run_task() {
 
   log "[$task_id] push します: $branch"
   if ! push_workspace "$wt" "$branch"; then
-    err "[$task_id] push に失敗しました"
+    fail_task "$task_id" "push に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
     post_report "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
     record_spend "$task_id" "$cost" "$pct_before" ""
@@ -575,7 +600,7 @@ run_task() {
       pr_created=1
       request_review "$task_id" "$branch"
     else
-      err "[$task_id] PR の作成に失敗しました: $pr_out"
+      fail_task "$task_id" "PR の作成に失敗しました: $pr_out"
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf 'ブランチ `%s` は push 済みですが、PR の作成に失敗しました。\n\n```\n%s\n```' "$branch" "$pr_out")"
       record_spend "$task_id" "$cost" "$pct_before" ""

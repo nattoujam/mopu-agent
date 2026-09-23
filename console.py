@@ -521,13 +521,18 @@ def task_dir_of(name):
     return target if target.is_dir() else None
 
 
+def file_key(path):
+    try:
+        stat = path.stat()
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+
+
 def task_summary(path):
     stream = path / "stream.jsonl"
-    try:
-        stat = stream.stat()
-        key = (stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        key = None
+    outcome_file = path / "outcome.json"
+    key = (file_key(stream), file_key(outcome_file))
     task_id = f"{path.parent.name}/{path.name}"
     cached = _task_cache.get(task_id)
     if cached and cached[0] == key:
@@ -560,6 +565,14 @@ def task_summary(path):
         # stream.jsonl が無いのはエージェントを起動する前に打ち切られたとき
         # （依存の準備の失敗、worktree の準備の失敗）
         summary["state"] = "incomplete" if stream.exists() else "aborted"
+    try:
+        outcome = json.loads(outcome_file.read_text())
+    except (OSError, ValueError):
+        outcome = {}
+    if outcome.get("ok") is False:
+        summary["failure"] = outcome.get("reason") or "失敗しました"
+        if summary["state"] != "aborted":
+            summary["state"] = "error"
     _task_cache[task_id] = (key, summary)
     return summary
 

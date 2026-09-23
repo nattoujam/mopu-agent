@@ -80,7 +80,7 @@ propose_plan() {
   local task_id="$1" number="$2" plan="$3" cost="$4" pct_before="$5" task_dir="$6"
 
   if ! validate_plan "$plan"; then
-    err "[$task_id] $PLAN_FILE_NAME の内容が不正です"
+    fail_task "$task_id" "$PLAN_FILE_NAME の内容が不正です"
     set_labels "$number" "$LABEL_FAILED"
     post_report "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
       "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
