@@ -112,6 +112,21 @@ input:disabled { opacity: .6; }
 .settings-actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
 .settings-actions .msg { margin: 0; }
 #appBox dl.kv dd { text-align: left; }
+.tags {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 6px; min-height: 35px; cursor: text;
+}
+.tags:focus-within { border-color: var(--accent); }
+.field.invalid .tags { border-color: var(--err); }
+.tag {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: rgba(110,168,254,.14); border: 1px solid rgba(110,168,254,.4); color: var(--accent);
+  border-radius: 999px; padding: 1px 2px 1px 10px; font-family: var(--mono); font-size: 12.5px;
+}
+.tag button { border: none; background: none; color: inherit; padding: 0 6px; font-size: 14px; line-height: 1.2; }
+.tag button:hover:not(:disabled) { color: var(--err); }
+.tags input.tag-input { flex: 1; min-width: 140px; width: auto; border: none; background: transparent; padding: 3px 4px; }
 button.danger { color: var(--err); border-color: rgba(239,122,122,.45); }
 input[type=file] { font-size: 12px; color: var(--muted); }
 button {
@@ -738,7 +753,9 @@ function fieldHtml(scope, key, d, value) {
   const id = `f-${scope}-${key}`;
   let input;
   if (d.type === 'list') {
-    input = `<textarea id="${id}" rows="${Math.max(2, value.length + 1)}" placeholder="1 行に 1 つ">${esc(value.join('\n'))}</textarea>`;
+    input = `<div class="tags" id="${id}" data-pattern="${esc(d.item_pattern || '')}">
+        ${value.map(tagHtml).join('')}<input type="text" class="tag-input" id="${id}-input" placeholder="入力して Enter" autocomplete="off" spellcheck="false">
+      </div>`;
   } else if (d.type === 'integer' || d.type === 'number') {
     const range = `${d.min != null ? ` min="${d.min}"` : ''}${d.max != null ? ` max="${d.max}"` : ''}`;
     input = `<input type="number" id="${id}" value="${esc(value)}"${range} step="${d.type === 'integer' ? 1 : 'any'}">`;
@@ -748,14 +765,66 @@ function fieldHtml(scope, key, d, value) {
   const def = Array.isArray(d.default) ? d.default.join(', ') : d.default;
   const help = [d.help, def !== '' && def != null ? `既定: ${def}` : null].filter(Boolean).join(' · ');
   return `<div class="field" data-field="${scope}.${key}">
-      <label for="${id}">${esc(d.label)}</label>${input}
+      <label for="${d.type === 'list' ? id + '-input' : id}">${esc(d.label)}</label>${input}
       <div class="hint" data-help="${esc(help)}">${esc(help)}</div>
     </div>`;
 }
 
+function tagHtml(value) {
+  return `<span class="tag" data-value="${esc(value)}">${esc(value)}<button type="button" aria-label="${esc(value)} を外す">×</button></span>`;
+}
+
+function setFieldError(field, message) {
+  const hint = field.querySelector('.hint');
+  field.classList.toggle('invalid', !!message);
+  hint.textContent = message || hint.dataset.help;
+}
+
+function commitTags(box) {
+  const input = box.querySelector('.tag-input');
+  const pattern = box.dataset.pattern ? new RegExp(box.dataset.pattern) : null;
+  const existing = new Set([...box.querySelectorAll('.tag')].map((t) => t.dataset.value));
+  const rejected = [];
+  for (const v of input.value.split(/[\s,]+/).filter(Boolean)) {
+    if (pattern && !pattern.test(v)) { rejected.push(v); continue; }
+    if (existing.has(v)) continue;
+    existing.add(v);
+    input.insertAdjacentHTML('beforebegin', tagHtml(v));
+  }
+  input.value = rejected.join(' ');
+  setFieldError(box.closest('.field'), rejected.length ? `形式が正しくありません: ${rejected.join(', ')}` : '');
+}
+
+function bindTags(root) {
+  root.querySelectorAll('.tags').forEach((box) => {
+    const input = box.querySelector('.tag-input');
+    box.onclick = (e) => {
+      const btn = e.target.closest('.tag button');
+      if (btn) { btn.parentElement.remove(); setFieldError(box.closest('.field'), ''); }
+      input.focus();
+    };
+    input.onkeydown = (e) => {
+      if (e.isComposing) return;
+      if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+        e.preventDefault();
+        commitTags(box);
+      } else if (e.key === 'Backspace' && input.value === '') {
+        const tags = box.querySelectorAll('.tag');
+        if (tags.length) tags[tags.length - 1].remove();
+      }
+    };
+    input.onpaste = () => setTimeout(() => commitTags(box));
+    input.onblur = () => { if (input.value.trim()) commitTags(box); };
+  });
+}
+
 function readField(scope, key, d) {
+  if (d.type === 'list') {
+    const box = $(`f-${scope}-${key}`);
+    commitTags(box);
+    return [...box.querySelectorAll('.tag')].map((t) => t.dataset.value);
+  }
   const raw = $(`f-${scope}-${key}`).value;
-  if (d.type === 'list') return raw.split('\n').map((v) => v.trim()).filter(Boolean);
   if (d.type === 'integer' || d.type === 'number') return raw.trim() === '' ? null : Number(raw);
   return raw;
 }
@@ -779,6 +848,7 @@ function renderSettings(data) {
     </div>
     <div class="hint">保存した設定は次回のポーリングから反映される。ラベル設定のない新しいリポジトリでは、先に ./setup.sh でラベルを作ること。</div>`;
   $('saveSettings').onclick = () => saveSettings(schema);
+  bindTags($('settings'));
   loadApp();
 }
 
@@ -864,14 +934,17 @@ async function deleteApp() {
 }
 
 async function saveSettings(schema) {
+  document.querySelectorAll('#settings .field.invalid').forEach((el) => setFieldError(el, ''));
   const collect = (scope) => Object.fromEntries(Object.entries(schema[scope]).map(([k, d]) => [k, readField(scope, k, d)]));
   const body = { global: collect('global'), repo: { name: $('f-repo-name').value.trim(), values: collect('repo') } };
-  document.querySelectorAll('.field.invalid').forEach((el) => {
-    el.classList.remove('invalid');
-    const hint = el.querySelector('.hint');
-    hint.textContent = hint.dataset.help;
-  });
   const msg = $('settingsMsg');
+  const pending = document.querySelector('#settings .field.invalid');
+  if (pending) {
+    pending.scrollIntoView({ block: 'center' });
+    msg.textContent = '形式が正しくない項目があります';
+    msg.className = 'msg err';
+    return;
+  }
   try {
     renderSettings(await postJson('/api/settings', body));
     $('settingsMsg').textContent = '保存しました';
