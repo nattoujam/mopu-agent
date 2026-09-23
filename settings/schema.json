@@ -1,0 +1,64 @@
+{
+  "global": {
+    "trigger_command": {
+      "env": "TRIGGER_COMMAND", "type": "string", "default": "/claude", "pattern": "^/[A-Za-z0-9_-]+$",
+      "label": "トリガーコマンド", "help": "コメントの行頭にこれがあるとタスクになる"
+    },
+    "model": {
+      "env": "MODEL", "type": "string", "default": "opus", "pattern": "^[A-Za-z0-9._\\[\\]-]+$",
+      "label": "モデル", "help": "claude --model に渡す値"
+    },
+    "task_timeout": {
+      "env": "TASK_TIMEOUT", "type": "duration", "default": "30m",
+      "label": "タスクのタイムアウト", "help": "1 タスクの実行時間の上限（例: 30m / 1h）"
+    },
+    "max_task_budget_usd": {
+      "env": "MAX_TASK_BUDGET_USD", "type": "number", "default": 3, "min": 0.01,
+      "label": "1 タスクの予算 (USD)", "help": "claude --max-budget-usd に渡す値"
+    },
+    "max_5h_percent": {
+      "env": "MAX_5H_PERCENT", "type": "integer", "default": 50, "min": 1, "max": 100,
+      "label": "5 時間枠の上限 (%)", "help": "これ以上使っているときは新しいタスクを始めない"
+    },
+    "max_7d_percent": {
+      "env": "MAX_7D_PERCENT", "type": "integer", "default": 80, "min": 1, "max": 100,
+      "label": "週次枠の上限 (%)", "help": "これ以上使っているときは新しいタスクを始めない"
+    },
+    "max_tasks_per_run": {
+      "env": "MAX_TASKS_PER_RUN", "type": "integer", "default": 3, "min": 1, "max": 50,
+      "label": "1 回のポーリングで処理する上限", "help": "タスク数"
+    },
+    "max_sub_issues": {
+      "env": "MAX_SUB_ISSUES", "type": "integer", "default": 5, "min": 1, "max": 20,
+      "label": "分解で作る sub issue の上限", "help": "件数"
+    }
+  },
+  "repo": {
+    "allowed_actors": {
+      "env": "ALLOWED_ACTORS", "type": "list", "shell": "words", "required": true,
+      "item_pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$", "default": [],
+      "label": "タスクを受け付けるユーザー", "help": "GitHub のユーザー名。ここにない人の Issue やコメントは実行しない"
+    },
+    "base_branch": {
+      "env": "BASE_BRANCH", "type": "string", "default": "", "pattern": "^([A-Za-z0-9._/-]+)?$",
+      "label": "PR のベースブランチ", "help": "空ならリポジトリの既定ブランチ"
+    },
+    "max_open_agent_prs": {
+      "env": "MAX_OPEN_AGENT_PRS", "type": "integer", "default": 1, "min": 0, "max": 50,
+      "label": "同時に進行させる PR の上限", "help": "0 で無制限。進行中 PR の元 Issue へのコメントは常に処理する"
+    },
+    "dispatch_workflows": {
+      "env": "DISPATCH_WORKFLOWS", "type": "list", "shell": "array", "default": [],
+      "item_pattern": "^[A-Za-z0-9._-]+\\.ya?ml$",
+      "label": "エージェントが起動してよいワークフロー", "help": "workflow_dispatch で起動を許すファイル名。デプロイ系は入れないこと"
+    },
+    "setup_cmd": {
+      "env": "SETUP_CMD", "type": "string", "default": "",
+      "label": "依存の準備コマンド", "help": "タスク開始前に worktree の中でホストが実行する（sandbox の外）。例: npm ci --prefer-offline"
+    },
+    "setup_timeout": {
+      "env": "SETUP_TIMEOUT", "type": "duration", "default": "10m",
+      "label": "準備コマンドのタイムアウト", "help": "例: 10m"
+    }
+  }
+}

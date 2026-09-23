@@ -24,12 +24,14 @@ Issue に agent:queued ラベル ─┐                              ┌─▶ p
 ## セットアップ
 
 ```bash
-cp config.env.example config.env
-$EDITOR config.env        # 最低限 REPO と ALLOWED_ACTORS を設定
-./setup.sh                # ラベル作成 + 依存確認
-./poll.sh --dry-run       # 検出されるタスクを確認
-./poll.sh                 # 実行
+cp config.env.example config.env   # コンソールの待受先など（既定のままでよければ不要）
+./console.sh                       # → http://127.0.0.1:8787 の「設定」で対象リポジトリとユーザーを登録
+./setup.sh                         # ラベル作成 + 依存確認
+./poll.sh --dry-run                # 検出されるタスクを確認
 ```
+
+設定は `state/settings.json` に保存される。以前の `config.env` に設定を書いていた場合は、
+`tools/migrate-config` を 1 回実行すると移行できる（元のファイルは `config.env.bak` に残る）。
 
 ## 使い方
 

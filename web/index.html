@@ -88,7 +88,7 @@ dl.kv dd { margin: 0; text-align: right; font-family: var(--mono); font-size: 12
 }
 .next small { display: block; font-size: 11px; color: var(--muted); letter-spacing: .1em; font-family: inherit; }
 .row { display: flex; gap: 8px; }
-input[type=text] {
+input[type=text], input[type=number], textarea {
   flex: 1;
   min-width: 0;
   background: var(--panel-2);
@@ -98,7 +98,19 @@ input[type=text] {
   padding: 7px 10px;
   font-family: var(--mono);
 }
-input[type=text]:focus { outline: none; border-color: var(--accent); }
+input[type=text]:focus, input[type=number]:focus, textarea:focus { outline: none; border-color: var(--accent); }
+input:disabled { opacity: .6; }
+.settings h3 { font-size: 12.5px; color: var(--muted); margin: 18px 0 8px; letter-spacing: .08em; }
+.settings h3:first-child { margin-top: 0; }
+.field { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 4px 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.field label { font-size: 13px; padding-top: 7px; }
+.field input, .field textarea { width: 100%; font-size: 13px; resize: vertical; }
+.field .hint { grid-column: 2; margin: 0; }
+.field.invalid input, .field.invalid textarea { border-color: var(--err); }
+.field.invalid .hint { color: var(--err); }
+@media (max-width: 700px) { .field { grid-template-columns: 1fr; } .field .hint { grid-column: 1; } }
+.settings-actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+.settings-actions .msg { margin: 0; }
 button {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -271,7 +283,7 @@ dl.fields dd {
         <button id="runNowBtn" style="flex:1">今すぐ実行</button>
       </div>
       <div class="msg" id="msg"></div>
-      <div class="hint">最短 60 秒。間隔は state/console.json に保存され、再起動後も引き継がれる。</div>
+      <div class="hint">最短 60 秒。間隔は state/settings.json に保存され、再起動後も引き継がれる。</div>
     </div>
   </section>
 
@@ -280,10 +292,12 @@ dl.fields dd {
       <div class="tabs">
         <button data-tab="runs" class="active">ポーリング履歴</button>
         <button data-tab="tasks">タスクログ</button>
+        <button data-tab="settings">設定</button>
       </div>
       <div class="list" id="list"><div class="empty">読み込み中…</div></div>
+      <div class="settings" id="settings" hidden></div>
     </div>
-    <div class="card">
+    <div class="card" id="detailCard">
       <h2 id="detailTitle">ログ</h2>
       <div id="detail"><div class="empty">上の一覧から選択してください</div></div>
     </div>
@@ -336,14 +350,14 @@ function fmtClock(epoch) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 function esc(s) {
-  return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function serverNow() { return Date.now() / 1000 + offset; }
 
 async function api(path, options) {
   const res = await fetch(path, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { data });
   return data;
 }
 function postJson(path, body) {
@@ -370,7 +384,8 @@ async function refresh() {
   }
   offset = status.now - Date.now() / 1000;
   render();
-  if (tab === 'runs') renderRuns(); else await loadTasks();
+  if (!status.configured && !settingsShown) { settingsShown = true; switchTab('settings'); return; }
+  if (tab === 'runs') renderRuns(); else if (tab === 'tasks') await loadTasks();
   if (selected && selected.kind === 'run' && isCurrent(selected.id)) openRun(selected.id, true);
 }
 
@@ -381,7 +396,7 @@ function isCurrent(name) {
 
 function render() {
   const sc = status.scheduler, sp = status.spend;
-  $('repo').textContent = status.repo || '';
+  $('repo').textContent = status.repo || '未設定';
   const pill = $('statePill');
   if (sc.current) { pill.textContent = '実行中'; pill.className = 'pill running'; }
   else if (sc.enabled) { pill.textContent = '待機中'; pill.className = 'pill idle'; }
@@ -659,7 +674,7 @@ $('presets').querySelectorAll('button').forEach((b) => {
 });
 async function applyInterval() {
   try {
-    status = await postJson('/api/settings', { interval: $('intervalInput').value.trim() });
+    status = await postJson('/api/scheduler', { interval: $('intervalInput').value.trim() });
     intervalDirty = false;
     offset = status.now - Date.now() / 1000;
     render();
@@ -672,7 +687,7 @@ $('intervalInput').onkeydown = (e) => { if (e.key === 'Enter') applyInterval(); 
 
 $('toggleBtn').onclick = async () => {
   try {
-    status = await postJson('/api/settings', { enabled: !status.scheduler.enabled });
+    status = await postJson('/api/scheduler', { enabled: !status.scheduler.enabled });
     render();
     note(status.scheduler.enabled ? 'スケジューラを再開しました' : 'スケジューラを停止しました', 'ok');
   } catch (e) { note(e.message, 'err'); }
@@ -686,15 +701,103 @@ $('runNowBtn').onclick = async () => {
   } catch (e) { note(e.message, 'err'); }
 };
 
+function switchTab(name) {
+  tab = name;
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x.dataset.tab === name));
+  const settings = name === 'settings';
+  $('list').hidden = settings;
+  $('detailCard').hidden = settings;
+  $('settings').hidden = !settings;
+  if (settings) { loadSettings(); return; }
+  listSig = null;
+  $('list').innerHTML = '<div class="empty">読み込み中…</div>';
+  if (tab === 'runs') renderRuns(); else loadTasks();
+}
 document.querySelectorAll('.tabs button').forEach((b) => {
-  b.onclick = () => {
-    tab = b.dataset.tab;
-    document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
-    listSig = null;
-    $('list').innerHTML = '<div class="empty">読み込み中…</div>';
-    if (tab === 'runs') renderRuns(); else loadTasks();
-  };
+  b.onclick = () => switchTab(b.dataset.tab);
 });
+
+let settingsShown = false;
+
+async function loadSettings() {
+  let data;
+  try { data = await api('/api/settings'); }
+  catch (e) { $('settings').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  renderSettings(data);
+}
+
+function fieldHtml(scope, key, d, value) {
+  const id = `f-${scope}-${key}`;
+  let input;
+  if (d.type === 'list') {
+    input = `<textarea id="${id}" rows="${Math.max(2, value.length + 1)}" placeholder="1 行に 1 つ">${esc(value.join('\n'))}</textarea>`;
+  } else if (d.type === 'integer' || d.type === 'number') {
+    const range = `${d.min != null ? ` min="${d.min}"` : ''}${d.max != null ? ` max="${d.max}"` : ''}`;
+    input = `<input type="number" id="${id}" value="${esc(value)}"${range} step="${d.type === 'integer' ? 1 : 'any'}">`;
+  } else {
+    input = `<input type="text" id="${id}" value="${esc(value)}" autocomplete="off" spellcheck="false">`;
+  }
+  const def = Array.isArray(d.default) ? d.default.join(', ') : d.default;
+  const help = [d.help, def !== '' && def != null ? `既定: ${def}` : null].filter(Boolean).join(' · ');
+  return `<div class="field" data-field="${scope}.${key}">
+      <label for="${id}">${esc(d.label)}</label>${input}
+      <div class="hint" data-help="${esc(help)}">${esc(help)}</div>
+    </div>`;
+}
+
+function readField(scope, key, d) {
+  const raw = $(`f-${scope}-${key}`).value;
+  if (d.type === 'list') return raw.split('\n').map((v) => v.trim()).filter(Boolean);
+  if (d.type === 'integer' || d.type === 'number') return raw.trim() === '' ? null : Number(raw);
+  return raw;
+}
+
+function renderSettings(data) {
+  const { schema } = data;
+  const repoName = data.repo.name;
+  $('settings').innerHTML = `
+    <h3>リポジトリ</h3>
+    <div class="field" data-field="repo.name">
+      <label for="f-repo-name">対象リポジトリ</label>
+      <input type="text" id="f-repo-name" value="${esc(repoName || '')}" placeholder="owner/repo" autocomplete="off" ${repoName ? 'disabled' : ''}>
+      <div class="hint" data-help="${repoName ? '登録後は変更できない' : ''}">${repoName ? '登録後は変更できない' : ''}</div>
+    </div>
+    ${Object.entries(schema.repo).map(([k, d]) => fieldHtml('repo', k, d, data.repo.values[k])).join('')}
+    <h3>全体</h3>
+    ${Object.entries(schema.global).map(([k, d]) => fieldHtml('global', k, d, data.global[k])).join('')}
+    <div class="settings-actions">
+      <button class="primary" id="saveSettings">保存</button>
+      <span class="msg" id="settingsMsg"></span>
+    </div>
+    <div class="hint">保存した設定は次回のポーリングから反映される。ラベル設定のない新しいリポジトリでは、先に ./setup.sh でラベルを作ること。</div>`;
+  $('saveSettings').onclick = () => saveSettings(schema);
+}
+
+async function saveSettings(schema) {
+  const collect = (scope) => Object.fromEntries(Object.entries(schema[scope]).map(([k, d]) => [k, readField(scope, k, d)]));
+  const body = { global: collect('global'), repo: { name: $('f-repo-name').value.trim(), values: collect('repo') } };
+  document.querySelectorAll('.field.invalid').forEach((el) => {
+    el.classList.remove('invalid');
+    const hint = el.querySelector('.hint');
+    hint.textContent = hint.dataset.help;
+  });
+  const msg = $('settingsMsg');
+  try {
+    renderSettings(await postJson('/api/settings', body));
+    $('settingsMsg').textContent = '保存しました';
+    $('settingsMsg').className = 'msg ok';
+    refresh();
+  } catch (e) {
+    const field = e.data && e.data.field && document.querySelector(`[data-field="${e.data.field}"]`);
+    if (field) {
+      field.classList.add('invalid');
+      field.querySelector('.hint').textContent = e.message;
+      field.scrollIntoView({ block: 'center' });
+    }
+    msg.textContent = e.message;
+    msg.className = 'msg err';
+  }
+}
 
 refresh();
 setInterval(refresh, 2000);

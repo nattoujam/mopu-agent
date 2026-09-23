@@ -13,6 +13,18 @@ BRANCH_PREFIX='agent/issue-'
 # タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd はここ
 # shellcheck disable=SC2034  # workspace.sh / run-task.sh で参照
 REPO_SUBDIR='repo'
+# shellcheck disable=SC2034  # run-task.sh / plan.sh / setup.sh で参照
+LABEL_QUEUED='agent:queued'
+# shellcheck disable=SC2034
+LABEL_RUNNING='agent:running'
+# shellcheck disable=SC2034
+LABEL_AWAITING='agent:awaiting-approval'
+# shellcheck disable=SC2034
+LABEL_DONE='agent:done'
+# shellcheck disable=SC2034
+LABEL_FAILED='agent:failed'
+SETTINGS_FILE="$AGENT_DIR/state/settings.json"
+SETTINGS_SCHEMA="$AGENT_DIR/settings/schema.json"
 
 log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -32,36 +44,53 @@ agent_commit() {
   printf '%s' "$sha"
 }
 
-load_config() {
-  local cfg="$AGENT_DIR/config.env"
-  [[ -f $cfg ]] || die "config.env がありません。config.env.example をコピーして設定してください"
-  # shellcheck disable=SC1090
-  source "$cfg"
+# 出力は eval される。値は画面から誰でも入れられるので、型を足すときも必ず @sh を通すこと
+settings_env() {
+  jq -r --slurpfile schema "$SETTINGS_SCHEMA" '
+    $schema[0] as $s
+    | (.repos // {}) as $repos
+    | ($repos | keys) as $names
+    | if ($names | length) != 1 then
+        error("リポジトリがちょうど 1 件設定されている必要があります（現在 \($names | length) 件）。コンソールの「設定」で登録してください")
+      else . end
+    | $names[0] as $repo
+    | def assign($defs; $vals):
+        $defs | to_entries[]
+        | .value as $d
+        | ($vals[.key] // $d.default) as $v
+        | if $d.type == "list" then
+            if $d.shell == "array" then "\($d.env)=(\($v | map(@sh) | join(" ")))"
+            else "\($d.env)=\($v | join(" ") | @sh)" end
+          else "\($d.env)=\($v | tostring | @sh)" end;
+    "REPO=\($repo | @sh)",
+    assign($s.global; .global // {}),
+    assign($s.repo; $repos[$repo])
+  ' "$SETTINGS_FILE"
+}
 
-  [[ -n ${REPO:-} ]] || die "config.env: REPO が未設定です"
-  [[ $REPO == */* ]] || die "config.env: REPO は owner/repo 形式で指定してください (現在: $REPO)"
+load_config() {
+  local cfg="$AGENT_DIR/config.env" env legacy=0
+  if [[ -f $cfg ]]; then
+    grep -qE '^[[:space:]]*REPO=' "$cfg" && legacy=1
+    # shellcheck disable=SC1090
+    source "$cfg"
+  fi
+
+  if [[ ! -f $SETTINGS_FILE ]]; then
+    (( legacy )) && die "設定がコンソールへ移りました。tools/migrate-config で config.env から移行してください"
+    die "設定がありません。./console.sh を起動し、画面の「設定」から登録してください"
+  fi
+  (( legacy )) && warn "config.env の REPO などは使われません。tools/migrate-config で整理してください"
+
+  env=$(settings_env) || die "state/settings.json を読めません"
+  eval "$env"
+
+  [[ $REPO == */* ]] || die "設定: リポジトリは owner/repo 形式で指定してください (現在: $REPO)"
 
   # 第三者が書いた Issue/コメントを無条件で実行しないための必須ガード
-  [[ -n ${ALLOWED_ACTORS:-} ]] || die "config.env: ALLOWED_ACTORS が空です。誰のタスクを実行するか明示してください"
+  [[ -n ${ALLOWED_ACTORS:-} ]] || die "設定: タスクを受け付けるユーザーが空です。誰のタスクを実行するか明示してください"
 
-  : "${TRIGGER_COMMAND:=/claude}"
-  : "${LABEL_QUEUED:=agent:queued}"
-  : "${LABEL_RUNNING:=agent:running}"
-  : "${LABEL_AWAITING:=agent:awaiting-approval}"
-  : "${LABEL_DONE:=agent:done}"
-  : "${LABEL_FAILED:=agent:failed}"
-  : "${MODEL:=opus}"
   : "${CLAUDE_BIN:=claude}"
-  : "${TASK_TIMEOUT:=30m}"
-  : "${MAX_TASK_BUDGET_USD:=3}"
-  : "${MAX_5H_PERCENT:=50}"
-  : "${MAX_7D_PERCENT:=80}"
-  : "${MAX_TASKS_PER_RUN:=3}"
-  : "${MAX_SUB_ISSUES:=5}"
-  : "${MAX_OPEN_AGENT_PRS:=1}"
-  declare -p DISPATCH_WORKFLOWS >/dev/null 2>&1 || DISPATCH_WORKFLOWS=()
-  : "${SETUP_CMD:=}"
-  : "${SETUP_TIMEOUT:=10m}"
 
   # エージェントは cd したうえで起動するため、パス指定は AGENT_DIR 基準で
   # 絶対パスに直しておく

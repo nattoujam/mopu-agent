@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# config.env の設定を state/settings.json へ移す。1 回だけ実行する
+set -euo pipefail
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+cfg="$AGENT_DIR/config.env"
+console_state="$AGENT_DIR/state/console.json"
+keep_keys='CONSOLE_HOST|CONSOLE_PORT|CONSOLE_ALLOW_REMOTE|CLAUDE_BIN|APP_ID|APP_PRIVATE_KEY'
+
+[[ -f $SETTINGS_FILE ]] && die "移行済みです: $(agent_relpath "$SETTINGS_FILE")"
+[[ -f $cfg ]] || die "config.env がありません"
+
+declare -A default_labels=(
+  [LABEL_QUEUED]=agent:queued [LABEL_RUNNING]=agent:running
+  [LABEL_AWAITING]=agent:awaiting-approval [LABEL_DONE]=agent:done [LABEL_FAILED]=agent:failed
+)
+
+(
+  unset REPO
+  DISPATCH_WORKFLOWS=()
+  # shellcheck disable=SC1090
+  source "$cfg"
+  [[ -n ${REPO:-} ]] || die "config.env に REPO がありません"
+
+  for l in "${!default_labels[@]}"; do
+    [[ ${!l} == "${default_labels[$l]}" ]] \
+      || warn "$l=${!l} は使われなくなります。ラベル名は ${default_labels[$l]} に固定されました。Issue のラベルを付け替えてください"
+  done
+
+  scheduler='null'
+  if [[ -f $console_state ]]; then
+    scheduler=$(jq -c '{interval_seconds, enabled}' "$console_state")
+  elif [[ -n ${CONSOLE_INTERVAL:-} ]]; then
+    [[ $CONSOLE_INTERVAL =~ ^([0-9]+)([smh]?)$ ]] || die "CONSOLE_INTERVAL を解釈できません: $CONSOLE_INTERVAL"
+    declare -A unit=([s]=1 [m]=60 [h]=3600 []=1)
+    scheduler=$(jq -nc --argjson s "$(( BASH_REMATCH[1] * ${unit[${BASH_REMATCH[2]}]} ))" \
+      '{interval_seconds: $s, enabled: true}')
+  fi
+
+  opt() { [[ -n ${!1:-} ]] && printf '%s' "${!1}"; }
+  mkdir -p "$(dirname "$SETTINGS_FILE")"
+  jq -n \
+    --arg repo "$REPO" \
+    --arg trigger_command "$(opt TRIGGER_COMMAND)" \
+    --arg model "$(opt MODEL)" \
+    --arg task_timeout "$(opt TASK_TIMEOUT)" \
+    --arg max_task_budget_usd "$(opt MAX_TASK_BUDGET_USD)" \
+    --arg max_5h_percent "$(opt MAX_5H_PERCENT)" \
+    --arg max_7d_percent "$(opt MAX_7D_PERCENT)" \
+    --arg max_tasks_per_run "$(opt MAX_TASKS_PER_RUN)" \
+    --arg max_sub_issues "$(opt MAX_SUB_ISSUES)" \
+    --arg allowed_actors "$(opt ALLOWED_ACTORS)" \
+    --arg base_branch "$(opt BASE_BRANCH)" \
+    --arg max_open_agent_prs "$(opt MAX_OPEN_AGENT_PRS)" \
+    --argjson dispatch_workflows "$(printf '%s\n' "${DISPATCH_WORKFLOWS[@]}" | jq -R 'select(. != "")' | jq -sc .)" \
+    --arg setup_cmd "$(opt SETUP_CMD)" \
+    --arg setup_timeout "$(opt SETUP_TIMEOUT)" \
+    --argjson scheduler "$scheduler" \
+    'def s: if . == "" then null else . end; def n: s | if . == null then null else tonumber end;
+     {
+       version: 1,
+       global: {
+         trigger_command: ($trigger_command | s),
+         model: ($model | s),
+         task_timeout: ($task_timeout | s),
+         max_task_budget_usd: ($max_task_budget_usd | n),
+         max_5h_percent: ($max_5h_percent | n),
+         max_7d_percent: ($max_7d_percent | n),
+         max_tasks_per_run: ($max_tasks_per_run | n),
+         max_sub_issues: ($max_sub_issues | n)
+       },
+       repos: {
+         ($repo): {
+           allowed_actors: ($allowed_actors | split(" ") | map(select(. != ""))),
+           base_branch: ($base_branch | s),
+           max_open_agent_prs: ($max_open_agent_prs | n),
+           dispatch_workflows: $dispatch_workflows,
+           setup_cmd: $setup_cmd,
+           setup_timeout: ($setup_timeout | s)
+         }
+       }
+     }
+     | del(.. | nulls)
+     | if $scheduler then .scheduler = $scheduler else . end' > "$SETTINGS_FILE.tmp"
+  mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
+)
+
+cp -p "$cfg" "$cfg.bak"
+{
+  echo "# 設定はコンソール（./console.sh）の「設定」で変更する。ここにはコンソールの起動に要るものだけを置く"
+  grep -E "^[[:space:]]*($keep_keys)=" "$cfg.bak" || true
+} > "$cfg"
+rm -f "$console_state"
+
+log "移行しました: $(agent_relpath "$SETTINGS_FILE")"
+log "元の config.env は $(agent_relpath "$cfg.bak") に残しました。確認して不要なら削除してください"

@@ -104,7 +104,7 @@ GitHub App を使わない構成では、`gh` の認証情報（`~/.config/gh`�
 
 ## セキュリティ
 
-- **`ALLOWED_ACTORS` は必須**。空だと `poll.sh` は起動を拒否する。
+- **タスクを受け付けるユーザー（`ALLOWED_ACTORS`）は必須**。空だと `poll.sh` は起動を拒否する。
   Issue / PR コメントは第三者が書けるため、発行者を絞らないとプロンプトインジェクション経由の任意コード実行に直結する。
 - システムプロンプトで、Issue 本文を「信頼できない入力」として扱わせている（`prompts/issue.md`）。
 - GitHub App 利用時は、**bot 自身（`app/<slug>` と `<slug>[bot]`）が `ALLOWED_ACTORS` に自動で加わる**。

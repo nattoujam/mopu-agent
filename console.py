@@ -18,7 +18,8 @@ STATE_DIR = AGENT_DIR / "state"
 LOGS_DIR = AGENT_DIR / "logs"
 RUN_LOG_DIR = LOGS_DIR / "console"
 WEB_DIR = AGENT_DIR / "web"
-CONSOLE_STATE = STATE_DIR / "console.json"
+SETTINGS_FILE = STATE_DIR / "settings.json"
+SCHEMA = json.loads((AGENT_DIR / "settings" / "schema.json").read_text())
 RUNS_FILE = STATE_DIR / "console-runs.jsonl"
 SPEND_FILE = STATE_DIR / "spend.jsonl"
 LAST_POLL_FILE = STATE_DIR / "last-poll"
@@ -31,6 +32,9 @@ RUNS_KEEP = 200
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
 DURATION_RE = re.compile(r"^\s*(\d+)\s*([smh]?)\s*$", re.IGNORECASE)
+TIMEOUT_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
+REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def log(msg):
@@ -131,25 +135,128 @@ def summarize_run_log(path):
     }
 
 
-def load_console_state():
-    default_interval = clamp_interval(parse_duration(os.environ.get("CONSOLE_INTERVAL") or 300))
-    state = {"interval_seconds": default_interval, "enabled": True}
+SETTINGS_LOCK = threading.Lock()
+
+
+def load_settings():
     try:
-        saved = json.loads(CONSOLE_STATE.read_text())
-        if isinstance(saved.get("interval_seconds"), (int, float)):
-            state["interval_seconds"] = clamp_interval(saved["interval_seconds"])
-        if isinstance(saved.get("enabled"), bool):
-            state["enabled"] = saved["enabled"]
+        return json.loads(SETTINGS_FILE.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def update_settings(mutate):
+    with SETTINGS_LOCK:
+        data = load_settings() or {"version": 1}
+        mutate(data)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        tmp.replace(SETTINGS_FILE)
+        return data
+
+
+def configured_repo(settings):
+    names = sorted(((settings or {}).get("repos") or {}).keys())
+    return names[0] if names else None
+
+
+def effective_values(defs, saved):
+    saved = saved or {}
+    return {key: saved.get(key, d["default"]) for key, d in defs.items()}
+
+
+def validate_value(d, value):
+    kind = d["type"]
+    if kind in ("string", "duration"):
+        if not isinstance(value, str):
+            raise ValueError("文字列で指定してください")
+        value = value.strip()
+        if CONTROL_RE.search(value):
+            raise ValueError("改行や制御文字は使えません")
+        if kind == "duration" and not TIMEOUT_RE.match(value):
+            raise ValueError("30m / 1h / 90s の形で指定してください")
+        if d.get("pattern") and not re.search(d["pattern"], value):
+            raise ValueError("形式が正しくありません")
+        return value
+    if kind in ("integer", "number"):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("数値で指定してください")
+        if kind == "integer" and value != int(value):
+            raise ValueError("整数で指定してください")
+        if kind == "integer":
+            value = int(value)
+        if "min" in d and value < d["min"]:
+            raise ValueError(f"{d['min']} 以上にしてください")
+        if "max" in d and value > d["max"]:
+            raise ValueError(f"{d['max']} 以下にしてください")
+        return value
+    if kind == "list":
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError("文字列の配列で指定してください")
+        items = []
+        for v in (v.strip() for v in value):
+            if not v or v in items:
+                continue
+            if d.get("item_pattern") and not re.search(d["item_pattern"], v):
+                raise ValueError(f"形式が正しくありません: {v}")
+            items.append(v)
+        if d.get("required") and not items:
+            raise ValueError("1 つ以上指定してください")
+        return items
+    raise ValueError(f"未知の型です: {kind}")
+
+
+class SettingsError(ValueError):
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field = field
+
+
+def validate_section(scope, defs, values):
+    if not isinstance(values, dict):
+        raise SettingsError(scope, "オブジェクトで指定してください")
+    unknown = sorted(set(values) - set(defs))
+    if unknown:
+        raise SettingsError(f"{scope}.{unknown[0]}", f"未知の項目です: {unknown[0]}")
+    clean = {}
+    for key, d in defs.items():
+        value = values.get(key, d["default"])
+        try:
+            clean[key] = validate_value(d, value)
+        except ValueError as exc:
+            raise SettingsError(f"{scope}.{key}", f"{d['label']}: {exc}") from None
+    return clean
+
+
+def settings_view(settings):
+    repo = configured_repo(settings)
+    return {
+        "schema": SCHEMA,
+        "configured": repo is not None,
+        "global": effective_values(SCHEMA["global"], (settings or {}).get("global")),
+        "repo": {
+            "name": repo,
+            "values": effective_values(SCHEMA["repo"], ((settings or {}).get("repos") or {}).get(repo)),
+        },
+    }
+
+
+def load_console_state():
+    state = {"interval_seconds": 300, "enabled": False}
+    try:
+        saved = (load_settings() or {}).get("scheduler") or {}
     except (OSError, ValueError):
-        pass
+        saved = {}
+    if isinstance(saved.get("interval_seconds"), (int, float)):
+        state["interval_seconds"] = clamp_interval(saved["interval_seconds"])
+    if isinstance(saved.get("enabled"), bool):
+        state["enabled"] = saved["enabled"]
     return state
 
 
 def save_console_state(state):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CONSOLE_STATE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False))
-    tmp.replace(CONSOLE_STATE)
+    update_settings(lambda data: data.__setitem__("scheduler", state))
 
 
 class Scheduler:
@@ -545,6 +652,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/status":
             return self._json(self._status())
+        if path == "/api/settings":
+            try:
+                return self._json(settings_view(load_settings()))
+            except ValueError:
+                return self._error(500, "state/settings.json が壊れています")
         if path == "/api/tasks":
             return self._json({"tasks": [task_summary(d) for d in task_ids()[:100]]})
         if path.startswith("/api/runs/"):
@@ -600,6 +712,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._error(400, "JSON を解釈できません")
         if path == "/api/settings":
+            return self._save_settings(body)
+        if path == "/api/scheduler":
             interval = None
             if "interval" in body:
                 try:
@@ -627,11 +741,44 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self._status())
         return self._error(404, "not found")
 
+    def _save_settings(self, body):
+        if not isinstance(body, dict):
+            return self._error(400, "JSON オブジェクトで指定してください")
+        repo = body.get("repo") or {}
+        name = str(repo.get("name") or "").strip()
+        if not REPO_RE.match(name):
+            return self._json({"error": "リポジトリは owner/repo の形で指定してください", "field": "repo.name"}, 400)
+        try:
+            global_values = validate_section("global", SCHEMA["global"], body.get("global") or {})
+            repo_values = validate_section("repo", SCHEMA["repo"], repo.get("values") or {})
+        except SettingsError as exc:
+            return self._json({"error": str(exc), "field": exc.field}, 400)
+        try:
+            current = configured_repo(load_settings())
+        except ValueError:
+            return self._error(500, "state/settings.json が壊れています")
+        if current and current != name:
+            return self._json(
+                {"error": f"リポジトリは変更できません（現在: {current}）", "field": "repo.name"}, 400
+            )
+
+        def mutate(data):
+            data["version"] = 1
+            data["global"] = global_values
+            data["repos"] = {name: repo_values}
+
+        return self._json(settings_view(update_settings(mutate)))
+
     def _status(self):
         status = SCHEDULER.snapshot()
+        try:
+            repo = configured_repo(load_settings())
+        except ValueError:
+            repo = None
         return {
             "now": time.time(),
-            "repo": os.environ.get("REPO", ""),
+            "repo": repo,
+            "configured": repo is not None,
             "scheduler": status,
             "poll": {
                 "lock_held": poll_lock_held(),
