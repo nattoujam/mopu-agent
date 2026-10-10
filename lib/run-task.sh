@@ -551,7 +551,7 @@ run_task_body() {
     set_labels "$number" "$LABEL_FAILED"
     post_report "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
       "$rc" "${result:-}" "${detail:-（stderr なし）}" "$(agent_relpath "$log_dir")")"
-    record_spend "$task_id" "$cost" "$pct_before" ""
+    record_spend "$task_id" "$cost" "$pct_before" "" failed
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
   fi
@@ -560,7 +560,7 @@ run_task_body() {
     fail_task "$task_id" "worktree の .git が書き換えられています"
     set_labels "$number" "$LABEL_FAILED"
     post_report "$(printf 'worktree の `.git` が書き換えられていたため、push せずに止めました。\n\nworktree: `%s`' "$(agent_relpath "$wt")")"
-    record_spend "$task_id" "$cost" "$pct_before" ""
+    record_spend "$task_id" "$cost" "$pct_before" "" failed
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
   fi
@@ -581,7 +581,7 @@ run_task_body() {
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
         "${result:-（応答なし）}" "$(agent_relpath "$wt")")"
-      record_spend "$task_id" "$cost" "$pct_before" ""
+      record_spend "$task_id" "$cost" "$pct_before" "" failed
       log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
       return 1
     fi
@@ -589,7 +589,7 @@ run_task_body() {
     log "[$task_id] コード変更なし。結果のみコメントします"
     set_labels "$number" "$( [[ -n $pending_plan ]] && printf '%s' "$LABEL_AWAITING" || printf '%s' "$LABEL_DONE" )"
     post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
-    record_spend "$task_id" "$cost" "$pct_before" ""
+    record_spend "$task_id" "$cost" "$pct_before" "" no-change
     remove_workspace "$task_dir"
     return 0
   fi
@@ -599,7 +599,7 @@ run_task_body() {
     fail_task "$task_id" "push に失敗しました"
     set_labels "$number" "$LABEL_FAILED"
     post_report "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
-    record_spend "$task_id" "$cost" "$pct_before" ""
+    record_spend "$task_id" "$cost" "$pct_before" "" failed
     return 1
   fi
 
@@ -619,7 +619,7 @@ run_task_body() {
       fail_task "$task_id" "PR の作成に失敗しました: $pr_out"
       set_labels "$number" "$LABEL_FAILED"
       post_report "$(printf 'ブランチ `%s` は push 済みですが、PR の作成に失敗しました。\n\n```\n%s\n```' "$branch" "$pr_out")"
-      record_spend "$task_id" "$cost" "$pct_before" ""
+      record_spend "$task_id" "$cost" "$pct_before" "" failed
       return 1
     fi
   fi
@@ -639,7 +639,7 @@ run_task_body() {
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
+  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" pr
   remove_workspace "$task_dir"
   log "[$task_id] 完了: $pr_url (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
   return 0

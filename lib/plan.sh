@@ -84,7 +84,7 @@ propose_plan() {
     set_labels "$number" "$LABEL_FAILED"
     post_report "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
       "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
-    record_spend "$task_id" "$cost" "$pct_before" ""
+    record_spend "$task_id" "$cost" "$pct_before" "" failed
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
   fi
@@ -95,7 +95,7 @@ propose_plan() {
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
+  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" plan
   remove_workspace "$task_dir"
   log "[$task_id] 承認待ち: \`$TRIGGER_COMMAND $APPROVE_WORD\` のコメントで sub issue を作成します"
   return 0

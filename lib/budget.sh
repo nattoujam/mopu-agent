@@ -47,10 +47,16 @@ check_budget() {
 }
 
 record_spend() {
-  local task_id="$1" cost="$2" before="$3" after="$4"
+  local task_id="$1" cost="$2" before="$3" after="$4" outcome="${5:-}"
+  local stream="$TASK_LOGS_DIR/$task_id/stream.jsonl" denials=0
+  [[ -f $stream ]] && denials=$(jq -s '[.[] | select(.type == "result") | (.permission_denials // []) | length] | last // 0' "$stream" 2>/dev/null)
   jq -nc --arg t "$(date -Is)" --arg id "$task_id" --arg repo "$REPO" \
      --argjson cost "${cost:-0}" \
      --arg before "$before" --arg after "$after" \
-     '{time:$t, repo:$repo, task:$id, cost_usd:$cost, pct_5h_before:$before, pct_5h_after:$after}' \
+     --arg outcome "$outcome" --argjson denials "${denials:-0}" \
+     --argjson task "${CURRENT_TASK_JSON:-null}" \
+     '{time:$t, repo:$repo, task:$id, cost_usd:$cost, pct_5h_before:$before, pct_5h_after:$after,
+       issue:($task.number // null), kind:($task.kind // null),
+       outcome:(if $outcome == "" then null else $outcome end), denials:$denials}' \
      >> "$SPEND_FILE"
 }
