@@ -452,42 +452,55 @@ function render() {
   $('kvInterval').textContent = fmtInterval(sc.interval_seconds);
   $('kvLastPoll').textContent = status.poll.last_poll_at || '—';
   $('kvLock').textContent = status.poll.lock_held ? '保持中' : '空き';
-  $('kvCost').replaceChildren(...sp.by_repo.map(r => {
+  const stat = (value, unit) => {
+    const el = document.createElement('span');
+    const num = document.createElement('b');
+    num.textContent = value;
+    const small = document.createElement('small');
+    small.textContent = unit;
+    el.append(num, small);
+    return el;
+  };
+  const row = (...stats) => {
+    const el = document.createElement('div');
+    el.className = 'cost-stats';
+    el.append(...stats);
+    return el;
+  };
+  const pct = (v) => v != null ? `${Math.round(v * 100)}%` : '—';
+  const costBox = (title, tasks, totalUsd, m) => {
     const box = document.createElement('div');
     box.className = 'cost-box';
     const name = document.createElement('div');
     name.className = 'cost-repo';
-    name.textContent = r.repo || '(repo 不明)';
-    const stats = document.createElement('div');
-    stats.className = 'cost-stats';
-    const stat = (value, unit) => {
-      const el = document.createElement('span');
-      const num = document.createElement('b');
-      num.textContent = value;
-      const small = document.createElement('small');
-      small.textContent = unit;
-      el.append(num, small);
-      return el;
-    };
-    stats.append(stat(r.tasks, 'タスク'), stat(`$${r.total_usd.toFixed(4)}`, '累計'));
-    box.append(name, stats);
-    const m = r.loop;
+    name.textContent = title;
+    box.append(name, row(stat(tasks, 'タスク'), stat(`$${totalUsd.toFixed(4)}`, '累計')));
     if (m && m.merged_prs) {
-      const loop = document.createElement('div');
-      loop.className = 'cost-stats';
-      loop.append(
-        stat(`${m.merged_prs_with_followups}/${m.merged_prs}`, '差し戻し PR'),
-        stat(m.cost_per_merged_pr != null ? `$${m.cost_per_merged_pr.toFixed(2)}` : '—', 'PR あたり'),
-        stat(m.denials, '拒否'),
-      );
       const cats = document.createElement('div');
       cats.className = 'cost-cats';
       cats.textContent = Object.entries(m.categories || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`)
         .concat(m.unclassified ? [`未分類 ${m.unclassified}`] : []).join(' / ') || '差し戻しなし';
-      box.append(loop, cats);
+      box.append(
+        row(
+          stat(`${m.merged_prs_with_followups}/${m.merged_prs}`, `差し戻し PR (${pct(m.followup_rate)})`),
+          stat(m.cost_per_merged_pr != null ? `$${m.cost_per_merged_pr.toFixed(2)}` : '—', 'PR あたり'),
+        ),
+        row(
+          stat(`${m.followup_runs}/${m.runs}`, `差し戻しの実行 (${pct(m.followup_run_share)})`),
+          stat(pct(m.followup_cost_share), 'そのコスト'),
+          stat(m.denials, '拒否'),
+        ),
+        cats,
+      );
     }
     return box;
-  }));
+  };
+  const boxes = sp.by_repo.map(r => costBox(r.repo || '(repo 不明)', r.tasks, r.total_usd, r.loop));
+  if (sp.by_repo.length > 1) {
+    boxes.unshift(costBox('全リポジトリ', sp.by_repo.reduce((n, r) => n + r.tasks, 0),
+      sp.by_repo.reduce((n, r) => n + r.total_usd, 0), sp.loop_total));
+  }
+  $('kvCost').replaceChildren(...boxes);
   $('kvPct').textContent = sp.pct_5h != null ? sp.pct_5h + '%' : '—';
 
   $('toggleBtn').textContent = sc.enabled ? '一時停止' : '再開';

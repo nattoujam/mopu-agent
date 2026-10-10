@@ -114,6 +114,7 @@ def spend_summary():
             }
             for repo, slot in sorted(by_repo.items())
         ],
+        "loop_total": metrics.get("total"),
         "loop_generated_at": metrics.get("generated_at"),
         "last_task": (last or {}).get("task"),
         "last_time": (last or {}).get("time"),
