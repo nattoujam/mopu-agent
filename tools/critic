@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016  # jq の式を単引用符で渡すため
+# tools/ci-gate から呼ばれ、変更を書いたエージェントとは会話を共有しない別の claude -p に
+# 変更を確かめさせる。結果を {"verdict", "reasons", "cost_usd"} の JSON 1 行で stdout に出す。
+# diff や依頼の本文はエージェントや第三者が書いたものなので、critic にはツールも設定も渡さない。
+# hook と同じく sandbox の外で動くため、ツールが残っていると乗っ取られたときにホストで実行される
+set -uo pipefail
+
+: "${MOPU_TASK_DIR:?}" "${MOPU_BASE_BRANCH:?}" "${MOPU_LOG_DIR:?}"
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+: "${CLAUDE_BIN:=claude}"
+MODEL="${CRITIC_MODEL:-sonnet}"
+LIMIT="${CRITIC_TIMEOUT:-420}"
+MAX_DIFF_CHARS=60000
+MAX_IMAGE_PAIRS=4
+MAX_IMAGE_BYTES=$(( 1500 * 1024 ))
+
+wt="$MOPU_TASK_DIR/$REPO_SUBDIR"
+ref="origin/$MOPU_BASE_BRANCH"
+gate="$MOPU_LOG_DIR/ci-gate.json"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+fail() {
+  jq -nc --arg d "$1" '{verdict: "error", reasons: [$d], cost_usd: 0}'
+  exit 0
+}
+
+{
+  echo "## 依頼"
+  echo
+  if [[ -s $MOPU_LOG_DIR/task.json ]]; then
+    jq -r '"### \(.title // "")\n\n\(.body // "")",
+           (if ((.comments // []) | length) > 0 then "\n### この作業で対応したコメント\n", ((.comments // [])[] | "- \(.instruction)") else empty end)' \
+      "$MOPU_LOG_DIR/task.json"
+  else
+    echo "（依頼の控えが無い）"
+  fi
+  echo
+  echo "## 対象リポジトリの指示"
+  echo
+  if [[ -s $MOPU_LOG_DIR/project-memory.md ]]; then cat "$MOPU_LOG_DIR/project-memory.md"; else echo "（無い）"; fi
+  echo
+  echo "## CI の結果"
+  echo
+  jq -r '"\(.verdict // "不明") \(.detail // "")"' "$gate" 2>/dev/null || echo "不明"
+  echo
+  echo "## テストに関わる変更"
+  echo
+  jq -r '(.test_changes // []) | if length == 0 then "（無い）" else map("- \(.)") | join("\n") end' "$gate" 2>/dev/null || echo "（不明）"
+  echo
+  echo "## diff（$ref からの変更）"
+  echo
+  echo '```diff'
+  git -C "$wt" diff --merge-base "$ref" HEAD -- . ':(exclude)*.png' | head -c "$MAX_DIFF_CHARS"
+  echo
+  echo '```'
+} > "$work/material.md" 2>/dev/null || fail "材料を集められなかった"
+
+# 変更前後の画像を並べて渡す。基準画像は撮り直されているので、CI の差分画像は残っていない
+# 画像の base64 は 1 つの引数の上限（128KB）を超えるので、jq にはファイルで渡す
+jq -n --rawfile t "$work/material.md" '[{type: "text", text: $t}]' > "$work/content.json"
+pairs=0
+while IFS= read -r png; do
+  (( pairs < MAX_IMAGE_PAIRS )) || break
+  git -C "$wt" show "HEAD:$png" > "$work/after.png" 2>/dev/null || continue
+  git -C "$wt" show "$ref:$png" > "$work/before.png" 2>/dev/null || : > "$work/before.png"
+  (( $(stat -c %s "$work/after.png") <= MAX_IMAGE_BYTES && $(stat -c %s "$work/before.png") <= MAX_IMAGE_BYTES )) || continue
+  base64 -w0 "$work/after.png" > "$work/after.b64"
+  base64 -w0 "$work/before.png" > "$work/before.b64"
+  jq -c --arg p "$png" --rawfile a "$work/after.b64" --rawfile b "$work/before.b64" '
+    . + [{type: "text", text: "### 画像 \($p)：変更前（無ければ新規）、変更後の順"}]
+      + (if $b == "" then [] else [{type: "image", source: {type: "base64", media_type: "image/png", data: $b}}] end)
+      + [{type: "image", source: {type: "base64", media_type: "image/png", data: $a}}]' \
+    "$work/content.json" > "$work/content.tmp" && mv "$work/content.tmp" "$work/content.json"
+  (( pairs++ ))
+done < <(git -C "$wt" diff --name-only --merge-base "$ref" HEAD -- '*.png' 2>/dev/null)
+
+schema='{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","revise"]},"reasons":{"type":"array","items":{"type":"string"}}},"required":["verdict","reasons"],"additionalProperties":false}'
+mkdir -p "$work/cwd"
+jq -c '{type: "user", message: {role: "user", content: .}}' "$work/content.json" > "$work/input.jsonl"
+resp=$(cd "$work/cwd" && timeout "$LIMIT" "$CLAUDE_BIN" -p \
+  --input-format stream-json --output-format stream-json --verbose \
+  --append-system-prompt "$(cat "$AGENT_DIR/prompts/critic.md")" \
+  --json-schema "$schema" --model "$MODEL" --tools "" \
+  --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+  --permission-mode dontAsk < "$work/input.jsonl" 2>/dev/null)
+rc=$?
+(( rc == 124 )) && fail "critic が $LIMIT 秒で終わらなかった"
+result=$(jq -c 'select(.type == "result")' <<<"$resp" 2>/dev/null | tail -1)
+[[ -n $result ]] || fail "critic の結果を読めなかった (exit=$rc)"
+jq -c '{verdict: (.structured_output.verdict // "error"),
+        reasons: (.structured_output.reasons // ["critic の出力を読めなかった"]),
+        cost_usd: (.total_cost_usd // 0)}' <<<"$result"

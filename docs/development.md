@@ -66,6 +66,7 @@ tools/dispatch-workflow エージェントが workflow_dispatch を起動する�
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 3 つを単独でしか呼べなくする PreToolUse フック
 tools/ci-gate           HEAD の CI 結果が出るまでエージェントを終えさせない Stop フック
+tools/critic            ci-gate から呼ばれ、会話を共有しない claude -p に変更を確かめさせる
 lib/ci-gate.ts          ワークフローの起動条件から、PR の変更で CI が動くかを判定する
 tools/check-sandbox-placeholders sandbox の placeholder と無視リストの食い違いを調べる（開発用）
 tools/loop-metrics      差し戻し率・PR あたりのコスト・差し戻しの種類を集計する
@@ -75,6 +76,7 @@ prompts/container.md    コンテナでの検証の回し方
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
 prompts/project-memory.md 対象リポジトリの指示の前置き
+prompts/critic.md       critic のシステムプロンプト
 settings/               エージェントの sandbox と権限の基本設定
 state/                  設定、コスト実績、GitHub App の鍵（secrets/）
 state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID

@@ -282,7 +282,7 @@ build_agent_settings() {
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
      | .hooks.PreToolUse = [{matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]}]
-     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/ci-gate", timeout: 120}]}]
+     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/ci-gate", timeout: 600}]}]
      | .permissions.deny = (
         ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
         + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
@@ -350,6 +350,15 @@ ci_gate_report() {
       printf '**CI**: 対象外（%s）: %s' "$detail" "$files"
       ;;
     *) return 0 ;;
+  esac
+  local critic reasons
+  critic=$(jq -r '.critic_verdict // empty' "$f")
+  reasons=$(jq -r '(.critic_reasons // []) | map("- \(.)") | join("\n")' "$f")
+  case $critic in
+    approve)    printf '\n\n**レビュー（critic）**: 承認' ;;
+    unresolved) printf '\n\n**レビュー（critic）**: 指摘が残ったまま上限に達した:\n%s' "$reasons" ;;
+    revise)     printf '\n\n**レビュー（critic）**: 指摘に対応している途中で作業が終わった:\n%s' "$reasons" ;;
+    error)      printf '\n\n**レビュー（critic）**: 確かめられなかった（%s）' "$(jq -r '(.critic_reasons // [])[0] // ""' "$f")" ;;
   esac
   tests=$(jq -r '(.test_changes // [])[] | "- `\(.)`"' "$f")
   [[ -n $tests ]] && printf '\n\n**テストに関わる変更**（テストを弱めていないか確かめてください）:\n%s' "$tests"
@@ -553,6 +562,9 @@ run_task_body() {
   result=$(last_result "$log_dir/stream.jsonl")
   is_error=$(jq -r 'select(.type=="result") | .is_error' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
   cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  # critic は別の claude -p なので、エージェントの total_cost_usd にも --max-budget-usd にも入らない
+  [[ -s $log_dir/ci-gate.json ]] \
+    && cost=$(jq -r --argjson c "${cost:-0}" '$c + (.critic_cost_usd // 0)' "$log_dir/ci-gate.json")
 
   local subtype session_id
   subtype=$(jq -r 'select(.type=="result") | .subtype' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)

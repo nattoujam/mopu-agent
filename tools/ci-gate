@@ -15,6 +15,7 @@ source "$AGENT_DIR/lib/common.sh"
 MAX_ROUNDS="${CI_GATE_MAX_ROUNDS:-3}"
 START_WAIT="${CI_GATE_START_WAIT:-180}"
 MAX_UNCOMMITTED_BLOCKS=2
+MAX_CRITIC_ROUNDS="${CI_GATE_MAX_CRITIC_ROUNDS:-2}"
 
 wt="$MOPU_TASK_DIR/$REPO_SUBDIR"
 state="$MOPU_LOG_DIR/ci-gate.json"
@@ -38,6 +39,31 @@ block() {
   update --arg s "$status" '.verdict = "unverified" | .detail = "CI を確かめ終える前に作業が終わった。最後の状態: \($s)"'
   printf '%s\n' "$message" >&2
   exit 2
+}
+
+# CI の関門を抜けた変更を、会話を共有しない critic（tools/critic）に確かめさせてから終える。
+# 結果は HEAD ごとに控え、同じ HEAD のまま終えようとしたときに critic を呼び直さない
+finish_reviewed() {
+  local verdict="$1" detail="$2" review out reasons
+  review=$(jq -r --arg h "$head" '.critic[$h].verdict // empty' "$state")
+  if [[ -z $review ]]; then
+    out=$("$AGENT_DIR/tools/critic")
+    jq -e '.verdict' <<<"$out" >/dev/null 2>&1 || out='{"verdict":"error","reasons":["critic の出力を読めなかった"],"cost_usd":0}'
+    update --arg h "$head" --argjson o "$out" '.critic[$h] = $o | .critic_cost_usd = ((.critic_cost_usd // 0) + ($o.cost_usd // 0))'
+    review=$(jq -r '.verdict' <<<"$out")
+  fi
+  reasons=$(jq -r --arg h "$head" '.critic[$h].reasons // [] | map("- \(.)") | join("\n")' "$state")
+  update --arg r "$review" --arg h "$head" '.critic_verdict = $r | .critic_reasons = (.critic[$h].reasons // [])'
+  if [[ $review == revise ]]; then
+    update '.critic_rounds = ((.critic_rounds // 0) + 1)'
+    if (( $(jq '.critic_rounds' "$state") <= MAX_CRITIC_ROUNDS )); then
+      update --arg v "$verdict" --arg d "$detail" '.verdict = $v | .detail = $d'
+      printf 'レビュアー（変更を書いた会話とは別の critic）が差し戻した。次の点を直してコミットし、push し直してから終えること。\n%s\n' "$reasons" >&2
+      exit 2
+    fi
+    update '.critic_verdict = "unresolved"'
+  fi
+  finish "$verdict" "$detail"
 }
 
 [[ -f $wt/.mopu-agent-plan.json ]] && exit 0
@@ -64,7 +90,7 @@ inspect=$(node "$AGENT_DIR/lib/ci-gate.ts" inspect "$wt" "$ref" "$MOPU_BASE_BRAN
   || finish unverified "CI が動くかを判定できなかった"
 update --argjson i "$inspect" '.test_changes = $i.test_changes | .files = $i.files'
 if [[ $(jq -r '.ci' <<<"$inspect") == skips ]]; then
-  finish skipped "変更したファイルにかかる CI が無い"
+  finish_reviewed skipped "変更したファイルにかかる CI が無い"
 fi
 
 remote=$(gh api "repos/$MOPU_REPO/git/ref/heads/$MOPU_BRANCH" --jq '.object.sha' 2>/dev/null || true)
@@ -84,7 +110,7 @@ if [[ $(jq 'length' <<<"$runs") == 0 ]]; then
   if (( now - seen < START_WAIT )); then
     block "CI がまだ起動していなかった" "push した HEAD（${head:0:7}）の CI がまだ起動していない。30 秒ほど待ってから gh run list --commit $head で起動を確かめ、終わるまで待ってから終えること。"
   fi
-  finish unverified "push から $START_WAIT 秒待っても CI が起動しなかった"
+  finish_reviewed unverified "push から $START_WAIT 秒待っても CI が起動しなかった"
 fi
 
 running=$(jq -r '[.[] | select(.status != "completed") | "\(.name)（run \(.id)）"] | join("、")' <<<"$runs")
@@ -94,7 +120,7 @@ fi
 
 failed=$(jq -r '[.[] | select(.conclusion as $c | ["success", "skipped", "neutral"] | index($c) | not)
                  | "\(.name)（run \(.id)、\(.conclusion)）"] | join("、")' <<<"$runs")
-[[ -z $failed ]] && finish passed ""
+[[ -z $failed ]] && finish_reviewed passed ""
 
 update '.rounds += 1'
 rounds=$(jq '.rounds' "$state")
