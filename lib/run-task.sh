@@ -468,6 +468,14 @@ run_task_body() {
       -e "s|%%PLAN_FILE%%|$plan_file|g" "$AGENT_DIR/prompts/decompose.md")"
   fi
 
+  local memory
+  memory=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH")
+  if [[ -n $memory ]]; then
+    sys_prompt+=$'\n\n'"$memory"
+    printf '%s\n' "$memory" > "$log_dir/project-memory.md"
+    log "[$task_id] 対象リポジトリの指示を ${#memory} 文字足します: $(agent_relpath "$log_dir/project-memory.md")"
+  fi
+
   local prompt pending_plan=""
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
   [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"

@@ -59,6 +59,7 @@ lib/discover.ts         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
 lib/plan.sh             タスク分解の提案と承認（sub issue 作成）
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
+lib/project-memory.sh   対象リポジトリの CLAUDE.md と rules をベースブランチから読み、プロンプトにする
 tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
 tools/dispatch-workflow エージェントが workflow_dispatch を起動する入口（同上、許可リスト付き）
@@ -71,6 +72,7 @@ prompts/ci.md           push と CI の結果の読み方
 prompts/container.md    コンテナでの検証の回し方
 prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
+prompts/project-memory.md 対象リポジトリの指示の前置き
 settings/               エージェントの sandbox と権限の基本設定
 state/                  設定、コスト実績、GitHub App の鍵（secrets/）
 state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID

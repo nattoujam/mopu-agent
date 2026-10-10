@@ -116,6 +116,7 @@ source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"
 source "$AGENT_DIR/lib/plan.sh"
+source "$AGENT_DIR/lib/project-memory.sh"
 source "$AGENT_DIR/lib/run-task.sh"
 # タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
 discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
