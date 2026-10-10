@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016  # update には jq の式を渡すため
+# エージェントの Stop hook。HEAD のコミットの CI 結果を関門にし、通るまで作業を続けさせる。
+# Claude Code の hook は sandbox の外で動くので、エージェントが書いたコードは実行せず、
+# git と GitHub の API を読むだけにする。判定は $MOPU_LOG_DIR/ci-gate.json に残し、
+# run-task.sh が PR 本文に載せる。
+# 終了コード 2 と stderr で止めるのを拒み、0 で許す。それ以外で終わると Claude Code は
+# 止めるのを許してしまうため、想定外の失敗も「未検証」と記録して 0 で終える
+set -uo pipefail
+
+: "${MOPU_TASK_DIR:?}" "${MOPU_BRANCH:?}" "${MOPU_REPO:?}" "${MOPU_BASE_BRANCH:?}" "${MOPU_LOG_DIR:?}"
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+MAX_ROUNDS="${CI_GATE_MAX_ROUNDS:-3}"
+START_WAIT="${CI_GATE_START_WAIT:-180}"
+MAX_UNCOMMITTED_BLOCKS=2
+
+wt="$MOPU_TASK_DIR/$REPO_SUBDIR"
+state="$MOPU_LOG_DIR/ci-gate.json"
+cat >/dev/null
+[[ -s $state ]] || printf '{"rounds":0,"uncommitted_blocks":0,"seen":{}}\n' > "$state"
+
+update() {
+  jq "$@" "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+}
+
+# verdict: passed / failed / skipped / unverified
+finish() {
+  update --arg v "$1" --arg d "${2:-}" '.verdict = $v | .detail = $d'
+  exit 0
+}
+
+# 止めるのを拒んだまま時間や予算で打ち切られたときに、前の周回の「通過」が残らないよう、
+# 拒むたびに未検証として書いておく
+block() {
+  local status="$1" message="$2"
+  update --arg s "$status" '.verdict = "unverified" | .detail = "CI を確かめ終える前に作業が終わった。最後の状態: \($s)"'
+  printf '%s\n' "$message" >&2
+  exit 2
+}
+
+[[ -f $wt/.mopu-agent-plan.json ]] && exit 0
+
+if [[ -n $(git -C "$wt" status --porcelain 2>/dev/null) ]]; then
+  if (( $(jq '.uncommitted_blocks' "$state") < MAX_UNCOMMITTED_BLOCKS )); then
+    update '.uncommitted_blocks += 1'
+    block "コミットしていない変更が残っていた" "コミットしていない変更が残っている。git add でファイルを指定してコミットしてから終えること（不要な変更なら元に戻す）。"
+  fi
+  finish unverified "コミットしていない変更が残ったまま終えた"
+fi
+
+head=$(git -C "$wt" rev-parse HEAD) || finish unverified "HEAD を読めなかった"
+# この実行でコミットが増えていなければ、確かめる対象の変更が無い
+[[ $head == "${MOPU_HEAD_BEFORE:-}" ]] && exit 0
+
+ref="origin/$MOPU_BASE_BRANCH"
+if git -C "$wt" log --format=%B "$ref..HEAD" 2>/dev/null \
+    | grep -qiE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: *true'; then
+  finish unverified "コミットメッセージで CI を飛ばしている"
+fi
+
+inspect=$(node "$AGENT_DIR/lib/ci-gate.ts" inspect "$wt" "$ref" "$MOPU_BASE_BRANCH" 2>/dev/null) \
+  || finish unverified "CI が動くかを判定できなかった"
+update --argjson i "$inspect" '.test_changes = $i.test_changes | .files = $i.files'
+if [[ $(jq -r '.ci' <<<"$inspect") == skips ]]; then
+  finish skipped "変更したファイルにかかる CI が無い"
+fi
+
+remote=$(gh api "repos/$MOPU_REPO/git/ref/heads/$MOPU_BRANCH" --jq '.object.sha' 2>/dev/null || true)
+if [[ $remote != "$head" ]]; then
+  block "HEAD を push していなかった" "HEAD（${head:0:7}）を push していないので CI が動いていない。$AGENT_DIR/tools/push-branch を単独で実行して push し、CI の結果を確かめてから終えること。"
+fi
+
+runs=$(gh api "repos/$MOPU_REPO/actions/runs?head_sha=$head&per_page=100" \
+  --jq '[.workflow_runs[] | select(.event == "pull_request" or .event == "pull_request_target" or .event == "push")
+         | {id, name, status, conclusion}]' 2>/dev/null) \
+  || finish unverified "CI の結果を GitHub から読めなかった"
+
+if [[ $(jq 'length' <<<"$runs") == 0 ]]; then
+  now=$(date +%s)
+  seen=$(jq -r --arg h "$head" '.seen[$h] // empty' "$state")
+  [[ -n $seen ]] || { update --arg h "$head" --argjson t "$now" '.seen[$h] = $t'; seen=$now; }
+  if (( now - seen < START_WAIT )); then
+    block "CI がまだ起動していなかった" "push した HEAD（${head:0:7}）の CI がまだ起動していない。30 秒ほど待ってから gh run list --commit $head で起動を確かめ、終わるまで待ってから終えること。"
+  fi
+  finish unverified "push から $START_WAIT 秒待っても CI が起動しなかった"
+fi
+
+running=$(jq -r '[.[] | select(.status != "completed") | "\(.name)（run \(.id)）"] | join("、")' <<<"$runs")
+if [[ -n $running ]]; then
+  block "CI が実行中だった: $running" "CI が実行中: $running。gh run watch <run-id> --exit-status で終わるまで待ってから終えること。"
+fi
+
+failed=$(jq -r '[.[] | select(.conclusion as $c | ["success", "skipped", "neutral"] | index($c) | not)
+                 | "\(.name)（run \(.id)、\(.conclusion)）"] | join("、")' <<<"$runs")
+[[ -z $failed ]] && finish passed ""
+
+update '.rounds += 1'
+rounds=$(jq '.rounds' "$state")
+(( rounds > MAX_ROUNDS )) && finish failed "$failed"
+block "CI が落ちていた: $failed" "CI が落ちた（${rounds}/${MAX_ROUNDS} 回目）: $failed。gh run view <run-id> --log-failed で原因を読み、直してコミットし、push し直してから終えること。テストを消したり弱めたりして通すのは禁止。"

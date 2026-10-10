@@ -65,6 +65,8 @@ tools/push-branch       エージェントが自分のブランチを push す�
 tools/dispatch-workflow エージェントが workflow_dispatch を起動する入口（同上、許可リスト付き）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 3 つを単独でしか呼べなくする PreToolUse フック
+tools/ci-gate           HEAD の CI 結果が出るまでエージェントを終えさせない Stop フック
+lib/ci-gate.ts          ワークフローの起動条件から、PR の変更で CI が動くかを判定する
 tools/check-sandbox-placeholders sandbox の placeholder と無視リストの食い違いを調べる（開発用）
 tools/loop-metrics      差し戻し率・PR あたりのコスト・差し戻しの種類を集計する
 prompts/issue.md        エージェントへの追加システムプロンプト

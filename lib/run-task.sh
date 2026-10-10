@@ -282,6 +282,7 @@ build_agent_settings() {
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
      | .hooks.PreToolUse = [{matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]}]
+     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/ci-gate", timeout: 120}]}]
      | .permissions.deny = (
         ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
         + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
@@ -317,6 +318,8 @@ invoke_agent() {
     unset GH_TOKEN GITHUB_TOKEN
     [[ -n ${AGENT_GH_TOKEN:-} ]] && export GH_TOKEN="$AGENT_GH_TOKEN"
     export MOPU_TASK_DIR="$task_dir" MOPU_BRANCH="$branch"
+    # tools/ci-gate（Stop hook）が読む。hook は Claude Code の環境を引き継ぐ
+    export MOPU_REPO="$REPO" MOPU_BASE_BRANCH="$BASE_BRANCH" MOPU_LOG_DIR="$log_dir" MOPU_HEAD_BEFORE="${GATE_HEAD_BEFORE:-}"
     # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュを worktree に持たせる
     export npm_config_cache="$task_dir/$REPO_SUBDIR/.npm-cache" XDG_CACHE_HOME="$task_dir/$REPO_SUBDIR/.cache"
     # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
@@ -331,6 +334,26 @@ invoke_agent() {
       --model "$MODEL" \
       --max-budget-usd "$MAX_TASK_BUDGET_USD" </dev/null
   ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
+}
+
+ci_gate_report() {
+  local f="$1/ci-gate.json" verdict detail files tests
+  [[ -s $f ]] || return 0
+  verdict=$(jq -r '.verdict // empty' "$f")
+  detail=$(jq -r '.detail // ""' "$f")
+  case $verdict in
+    passed)     printf '**CI**: 通過' ;;
+    failed)     printf '**CI**: 検証未通過。直しても落ちたままで、上限に達した: %s' "$detail" ;;
+    unverified) printf '**CI**: 未検証（%s）' "$detail" ;;
+    skipped)
+      files=$(jq -r '(.files // [])[:20] | map("`\(.)`") | join(", ")' "$f")
+      printf '**CI**: 対象外（%s）: %s' "$detail" "$files"
+      ;;
+    *) return 0 ;;
+  esac
+  tests=$(jq -r '(.test_changes // [])[] | "- `\(.)`"' "$f")
+  [[ -n $tests ]] && printf '\n\n**テストに関わる変更**（テストを弱めていないか確かめてください）:\n%s' "$tests"
+  return 0
 }
 
 TASK_OUTCOME_FILE=""
@@ -500,6 +523,7 @@ run_task_body() {
       head_before=$(git -C "$wt" merge-base HEAD "origin/$BASE_BRANCH")
     fi
   fi
+  GATE_HEAD_BEFORE="$head_before"
 
   # 前回の会話を引き継ぐ条件。--retry は中断したタスクの再開、コメントは自分が
   # 出した PR へのレビュー対応で、どちらも前回の続きになる
@@ -611,14 +635,25 @@ run_task_body() {
     return 1
   fi
 
-  # 既存 PR があれば作り直さず、追加コミットをそのまま反映させる
-  local pr_url pr_out pr_created=0
+  # 既存 PR があれば作り直さず、追加コミットをそのまま反映させる。draft は
+  # tools/push-branch が最初の push で作った仮の PR なので、本文を結果で書き換えて出す
+  local pr_url pr_out pr_created=0 pr_draft gate pr_body
+  gate=$(ci_gate_report "$log_dir")
+  pr_body=$(printf 'Closes #%s\n\n%s\n\n%s---\n%s' "$number" "$result" "${gate:+$gate$'\n\n'}" "$COMMENT_MARKER")
   pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
-  if [[ -z $pr_url ]]; then
+  pr_draft=$(gh pr view "$branch" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null)
+  if [[ -n $pr_url && $pr_draft == true ]]; then
+    if gh pr edit "$branch" -R "$REPO" --body "$pr_body" >/dev/null && gh pr ready "$branch" -R "$REPO" >/dev/null; then
+      pr_created=1
+      request_review "$task_id" "$branch"
+    else
+      warn "[$task_id] draft PR を出せませんでした: $pr_url"
+    fi
+  elif [[ -z $pr_url ]]; then
     if pr_out=$(gh pr create -R "$REPO" \
       --base "$BASE_BRANCH" --head "$branch" \
       --title "$title" \
-      --body "$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")" 2>&1)
+      --body "$pr_body" 2>&1)
     then
       pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
       pr_created=1
@@ -640,9 +675,11 @@ run_task_body() {
   # コミットでは PR 本文が書き換わらないため、返信に含めないと応答が消える
   local summary fallback=""
   (( pr_created )) || fallback="${result:-（応答なし）}"
-  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
+  local gate_block=""
+  [[ -n $gate ]] && gate_block="$gate"$'\n\n'
+  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n%s推定コスト: $%s' \
     "$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )" \
-    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$(printf '%.2f' "$cost")")
+    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$gate_block" "$(printf '%.2f' "$cost")")
   post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""

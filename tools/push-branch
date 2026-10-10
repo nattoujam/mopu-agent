@@ -26,3 +26,20 @@ if use_github_app; then
 fi
 push_workspace "$wt" "$MOPU_BRANCH"
 echo "pushed: $MOPU_BRANCH"
+
+# 対象リポジトリの CI はトリガーが pull_request だけのことが多く、PR が無いと
+# 動かないため、最初の push で draft PR を作る。本文は run-task.sh が作業の終わりに書き換える
+gh pr view "$MOPU_BRANCH" -R "$REPO" --json url >/dev/null 2>&1 && exit 0
+[[ -n ${BASE_BRANCH:-} ]] || BASE_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)
+if [[ -z $BASE_BRANCH ]]; then
+  echo "既定ブランチを取得できなかったので、draft PR は作りませんでした。pull_request で動く CI は起動しません"
+  exit 0
+fi
+number="${MOPU_BRANCH#"$BRANCH_PREFIX"}"
+title=$(gh issue view "$number" -R "$REPO" --json title --jq .title 2>/dev/null) || title="#$number"
+if url=$(gh pr create -R "$REPO" --draft --base "$BASE_BRANCH" --head "$MOPU_BRANCH" --title "$title" \
+    --body "$(printf 'Closes #%s\n\nエージェントが作業中です。作業が終わると、この本文を結果で書き換えます。\n\n---\n%s' "$number" "$COMMENT_MARKER")" 2>&1); then
+  echo "draft PR を作りました（CI が動きます）: $(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$url" | tail -1)"
+else
+  echo "draft PR を作れませんでした。pull_request で動く CI は起動しません: $(tail -1 <<<"$url")"
+fi
