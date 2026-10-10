@@ -34,6 +34,18 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/san
 
 Issue の作成やラベル操作は本物の GitHub を叩く。コンソールの設定で、対象リポジトリには検証用のものを指定すること。
 
+## Claude Code を更新したとき
+
+Claude Code の sandbox が作業ディレクトリに置く書き込み禁止の placeholder は、バージョンによって変わる。
+更新したら次を実行し、`lib/workspace.sh` の `SANDBOX_PLACEHOLDERS` と食い違わないか確かめる。
+
+```bash
+tools/check-sandbox-placeholders
+```
+
+Claude Code にログインしている必要があり、利用枠を少し使う。足りない placeholder があれば一覧を出して終了コード 1 で終わるので、
+`SANDBOX_PLACEHOLDERS` に足す。置かれなくなった placeholder は警告として出る。
+
 ## モジュールの責務
 
 名前から読み取れないものだけを載せる。
@@ -51,6 +63,7 @@ tools/push-branch       エージェントが自分のブランチを push す�
 tools/dispatch-workflow エージェントが workflow_dispatch を起動する入口（同上、許可リスト付き）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 3 つを単独でしか呼べなくする PreToolUse フック
+tools/check-sandbox-placeholders sandbox の placeholder と無視リストの食い違いを調べる（開発用）
 prompts/issue.md        エージェントへの追加システムプロンプト
 prompts/ci.md           push と CI の結果の読み方
 prompts/container.md    コンテナでの検証の回し方

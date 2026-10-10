@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Claude Code の sandbox が作業ディレクトリに置く書き込み禁止の placeholder を実測し、
+# lib/workspace.sh の SANDBOX_PLACEHOLDERS と比べる。placeholder は Claude Code の
+# バージョンで変わるため、Claude Code を更新したら実行する。claude -p を 1 回呼ぶ
+set -euo pipefail
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+source "$AGENT_DIR/lib/workspace.sh"
+
+claude_bin="${CLAUDE_BIN:-claude}"
+out='.mopu-placeholder-probe'
+dir=$(mktemp -d)
+trap 'rm -rf -- "${dir:?}"' EXIT
+git -C "$dir" init -q
+
+# placeholder は sandbox の中でしか見えないので、git status の結果を作業ディレクトリに書かせて読む
+(
+  cd "$dir"
+  env -u GH_TOKEN -u GITHUB_TOKEN "$claude_bin" -p \
+    "Bash ツールで次のコマンドを 1 回だけ実行する。ほかのことはしない: git status --porcelain --untracked-files=all > $out" \
+    --settings "$AGENT_DIR/settings/agent-settings.json" \
+    --permission-mode dontAsk --setting-sources '' \
+    --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+    --model haiku --max-budget-usd 0.2 </dev/null >/dev/null
+)
+[[ -f $dir/$out ]] || die "sandbox の中で git status が実行されませんでした"
+
+actual=$(sed -n 's|^?? |/|p' "$dir/$out" | grep -vxF "/$out" | sort -u)
+expected=$(printf '%s\n' "${SANDBOX_PLACEHOLDERS[@]}" | sort -u)
+missing=$(comm -23 <(printf '%s\n' "$actual") <(printf '%s\n' "$expected") | sed '/^$/d')
+stale=$(comm -13 <(printf '%s\n' "$actual") <(printf '%s\n' "$expected") | sed '/^$/d')
+
+log "$("$claude_bin" --version)"
+[[ -z $stale ]] || warn "SANDBOX_PLACEHOLDERS にあるが、置かれなかった placeholder:"$'\n'"$stale"
+if [[ -n $missing ]]; then
+  die "SANDBOX_PLACEHOLDERS に足す必要がある placeholder:"$'\n'"$missing"
+fi
+log "SANDBOX_PLACEHOLDERS は実際の placeholder をすべて含んでいます ($(wc -l <<<"$actual") 件)"

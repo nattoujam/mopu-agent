@@ -38,7 +38,7 @@ workdir=$(field workdir)
 cmd=$(field command)
 limit=$(field timeout)
 
-# .git はホスト側の控えで覆う。コンテナから worktree の .git を書き換えられると、
+# .git にはホスト側で作ったコピーを読み取り専用で bind mount する。コンテナから worktree の .git を書き換えられると、
 # ホストが後で実行する git に別の hooks や config を読ませられるため
 snap=$(mktemp)
 printf '%s\n' "$gitfile" > "$snap"

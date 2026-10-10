@@ -81,12 +81,12 @@ sudo systemctl reload apparmor
 - ネットワークにはつながらない（`--network none`）。依存は sandbox の中か `SETUP_CMD` で先に入れておく。
   DB などのサービスや外部 API が要る検証は回せない
 - マウントするのは worktree（`worktrees/<owner>__<repo>/<task-id>/repo/`）だけ。
-  worktree の `.git` は読み取り専用の控えで覆うので、コンテナの中では `git` が使えない
+  コンテナの中からは worktree の `.git` を書き換えられず、`git` も使えない
 - ホストのユーザーの uid/gid で、ケーパビリティなしで動く。`HOME` は `/tmp`
 - `/dev/shm` は 1 GB。`--ipc=host` は付けない
 - rootful の docker では、コンテナからの脱出がそのままホストの root 権限になる。可能なら rootless docker を使う
 
-イメージはタグまで含めて書く。Playwright のようにイメージの版を依存の版と揃える必要があるものは、
+イメージはタグまで含めて書く。Playwright のようにイメージのバージョンを依存のバージョンと揃える必要があるものは、
 依存を上げるときに設定のイメージも合わせて書き換える。
 
 エージェントは登録した検証からどれを回すかと、追加の引数しか選べない。引数は登録したコマンドの末尾に足される。

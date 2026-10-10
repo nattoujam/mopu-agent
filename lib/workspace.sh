@@ -10,12 +10,23 @@ ensure_repo() {
   ensure_excludes
 }
 
+# Claude Code の sandbox が、まだないファイルへの書き込みを禁じるために置くもの。
+# sandbox の中では /dev/null に見え、未追跡のまま残すと git add -A が丸ごと失敗する。
+# セッションが殺されると 0 バイトのファイルとしてホストに残り、git status にも出る
+SANDBOX_PLACEHOLDERS=(
+  /.bash_profile /.bashrc /.profile /.zprofile /.zshrc
+  /.gitconfig /.gitmodules /.ripgreprc /.mcp.json /.idea /.vscode
+  /.claude/agents /.claude/commands /.claude/hooks /.claude/launch.json /.claude/loop.md
+  /.claude/output-styles /.claude/routines /.claude/scheduled_tasks.json
+  /.claude/settings.json /.claude/settings.local.json /.claude/skills /.claude/workflows
+)
+
 # 計画・返信のファイルとキャッシュは worktree の中に置くが、git status を
 # 「エージェントが変更を残したか」の判定に使うため、git からは見えなくする
 ensure_excludes() {
   local f="$REPO_DIR/.git/info/exclude" p
   mkdir -p "${f%/*}"
-  for p in "/$PLAN_FILE_NAME" "/$REPLIES_FILE_NAME" /.npm-cache/ /.cache/; do
+  for p in "/$PLAN_FILE_NAME" "/$REPLIES_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
     grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
   done
 }
