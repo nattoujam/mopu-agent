@@ -263,18 +263,22 @@ build_agent_settings() {
   use_github_app && secret_paths+=("$APP_PRIVATE_KEY")
   local secrets_json
   secrets_json=$(printf '%s\n' "${secret_paths[@]}" | jq -R . | jq -sc .)
-  local tools="$AGENT_DIR/tools"
+  local tools="$AGENT_DIR/tools" admin
+  [[ $(<"$wt/.git") =~ ^gitdir:\ (.+)$ ]] || { err "worktree の .git を読めません: $wt"; return 1; }
+  admin="${BASH_REMATCH[1]}"
 
   # worktree のコミットは共有の .git（repos/<slug>/.git）へ書くので、そこだけ
   # 書き込みを開ける。ただし hooks と config はホストが後で git push を実行する
-  # ときに読まれる＝任意コード実行の経路なので閉じる。worktree 側の .git は
-  # gitdir を指すただのファイルで、書き換えると別の hooks を差し込めるため同様に閉じる
-  jq --arg wt "$wt" --arg task_dir "$task_dir" --arg repo_git "$REPO_DIR/.git" \
+  # ときに読まれる＝任意コード実行の経路なので閉じる。worktree 側の .git と、
+  # 管理ディレクトリの commondir / gitdir は git が config と hooks を探す道筋で、
+  # 書き換えると別の hooks を差し込めるため同様に閉じる。info/ は無視リストを持ち、
+  # 書き換えると未コミットの変更を git status から隠せるため閉じる
+  jq --arg wt "$wt" --arg repo_git "$REPO_DIR/.git" --arg admin "$admin" \
      --argjson secrets "$secrets_json" --arg tools "$tools" \
     'def abs: sub("^/"; "//");
      ["\($tools)/push-branch", "\($tools)/dispatch-workflow *", "\($tools)/run-container *"] as $host_cmds
      | .permissions.allow = (
-        ["Read(\($task_dir | abs)/**)", "Edit(\($task_dir | abs)/**)"]
+        ["Read(\($wt | abs)/**)", "Edit(\($wt | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
      | .hooks.PreToolUse = [{matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]}]
@@ -283,8 +287,9 @@ build_agent_settings() {
         + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
         + .permissions.deny)
      | .sandbox.filesystem = {
-        allowWrite: [$task_dir, $repo_git],
-        denyWrite: ["\($wt)/.git", "\($repo_git)/hooks", "\($repo_git)/config"],
+        allowWrite: [$wt, $repo_git],
+        denyWrite: ["\($wt)/.git", "\($repo_git)/hooks", "\($repo_git)/config", "\($repo_git)/info",
+                    "\($admin)/commondir", "\($admin)/gitdir"],
         denyRead: $secrets
        }' \
     "$AGENT_DIR/settings/agent-settings.json" > "$out"
@@ -312,8 +317,8 @@ invoke_agent() {
     unset GH_TOKEN GITHUB_TOKEN
     [[ -n ${AGENT_GH_TOKEN:-} ]] && export GH_TOKEN="$AGENT_GH_TOKEN"
     export MOPU_TASK_DIR="$task_dir" MOPU_BRANCH="$branch"
-    # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュをタスク側に持たせる
-    export npm_config_cache="$task_dir/.npm-cache" XDG_CACHE_HOME="$task_dir/.cache"
+    # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュを worktree に持たせる
+    export npm_config_cache="$task_dir/$REPO_SUBDIR/.npm-cache" XDG_CACHE_HOME="$task_dir/$REPO_SUBDIR/.cache"
     # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
     timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
       "${resume_args[@]}" \
@@ -375,8 +380,8 @@ run_task_body() {
   fi
 
   local wt="$task_dir/repo"
-  local plan_file="$task_dir/$PLAN_FILE_NAME"
-  local replies_file="$task_dir/$REPLIES_FILE_NAME"
+  local plan_file="$wt/$PLAN_FILE_NAME"
+  local replies_file="$wt/$REPLIES_FILE_NAME"
   # --retry で引き継いだ作業ツリーには前回の返信が残っている
   rm -f "$replies_file"
   local log_dir="$TASK_LOGS_DIR/$task_id"
@@ -459,8 +464,6 @@ run_task_body() {
 
 この Issue は既に分解されたタスクの一部です。これ以上分解せず、そのまま実装すること。"
   else
-    # 計画ファイルはリポジトリの外に置く。エージェントはリポジトリ直下で動くため
-    # 相対パスだと書き先を間違えやすく、外したことに気づけないまま分解が失われる
     sys_prompt+=$'\n\n'"$(sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" \
       -e "s|%%PLAN_FILE%%|$plan_file|g" "$AGENT_DIR/prompts/decompose.md")"
   fi

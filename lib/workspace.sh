@@ -7,6 +7,17 @@ ensure_repo() {
     git -C "$REPO_DIR" remote set-url origin "https://github.com/$REPO.git"
   fi
   git -C "$REPO_DIR" fetch --quiet --prune origin || die "fetch に失敗しました"
+  ensure_excludes
+}
+
+# 計画・返信のファイルとキャッシュは worktree の中に置くが、git status を
+# 「エージェントが変更を残したか」の判定に使うため、git からは見えなくする
+ensure_excludes() {
+  local f="$REPO_DIR/.git/info/exclude" p
+  mkdir -p "${f%/*}"
+  for p in "/$PLAN_FILE_NAME" "/$REPLIES_FILE_NAME" /.npm-cache/ /.cache/; do
+    grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
+  done
 }
 
 run_setup() {
@@ -15,9 +26,8 @@ run_setup() {
   ( cd "$wt" && timeout "$SETUP_TIMEOUT" bash -c "$SETUP_CMD" ) > "$out" 2>&1
 }
 
-# エージェントの cwd はタスクディレクトリで、その直下の repo/ が worktree。
-# .mopu-agent-plan.json をリポジトリの外に置き、git status の結果をそのまま
-# 「エージェントが変更を残したか」の判定に使えるようにする
+# worktree はタスクディレクトリの直下の repo/ に置く。sandbox からはタスクディレクトリに
+# 書けないので、repo/ を rename して別の .git を持つディレクトリに差し替えられないため
 workspace_repo() { printf '%s/%s' "$1" "$REPO_SUBDIR"; }
 
 # 失敗したタスクの worktree は調査用に残すので、同じ Issue を再実行すると

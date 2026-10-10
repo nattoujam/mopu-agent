@@ -55,7 +55,7 @@ sub issue はこの時点では作らない。作ってしまうと `agent:queue
 ### 仕組み
 
 エージェントの `gh` トークンは読み取り専用なので、**自分では sub issue を作れない**。
-分解結果はタスク用ディレクトリ直下（リポジトリの外）の `.mopu-agent-plan.json` に書かせる。
+分解結果は worktree 直下の `.mopu-agent-plan.json` に書かせる。
 それを `lib/plan.sh` が読んで案のコメントを投稿し、承認されたら sub issue を作る。
 
 ```json

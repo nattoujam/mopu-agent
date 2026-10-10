@@ -16,8 +16,7 @@ SESSION_ID="${FAKE_AGENT_SESSION_ID:-00000000-0000-4000-8000-fa4ea9e00000}"
 
 # エージェントは worktree 直下で起動される
 MARKER_FILE='mopu-agent-fake.md'
-# plan だけは git status を汚さないよう worktree の外（タスクディレクトリ）へ置く
-PLAN_FILE='../.mopu-agent-plan.json'
+PLAN_FILE='.mopu-agent-plan.json'
 
 PROMPT=""
 RESUME_ID=""

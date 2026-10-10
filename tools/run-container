@@ -22,9 +22,9 @@ check=$(jq -c --arg k "$key" 'first(.[] | select(.name == $k)) // empty' <<<"$CO
 field() { jq -r --arg k "$1" '.[$k] // ""' <<<"$check"; }
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
 
-# マウント元は task_dir にする。親の worktrees/<slug> は sandbox から書けないので
-# task_dir は差し替えられないが、中の repo/ はシンボリックリンクに差し替えられ、
-# マウント元にするとホストの任意のディレクトリをコンテナに渡してしまうため
+# worktree をマウント元にできるのは、sandbox から worktrees/<slug> にも task_dir にも
+# 書けず、repo/ をシンボリックリンクに差し替えられないため。差し替えられると、
+# ホストの任意のディレクトリをコンテナに渡してしまう
 task_dir=$(realpath -e -- "$MOPU_TASK_DIR") || die "タスクディレクトリがありません"
 [[ ${task_dir%/*} == "$(realpath -e -- "$WORKTREES_DIR")" && ! -L $MOPU_TASK_DIR ]] \
   || die "想定外のタスクディレクトリです"
@@ -61,7 +61,7 @@ timeout "$limit" docker run --rm --name "$cname" --init \
   --cap-drop ALL --security-opt no-new-privileges \
   --pids-limit 4096 --shm-size 1g \
   -e HOME=/tmp \
-  --mount "type=bind,src=$task_dir,dst=$task_dir" \
+  --mount "type=bind,src=$wt,dst=$wt" \
   --mount "type=bind,src=$snap,dst=$wt/.git,readonly" \
   -w "$wt${workdir:+/$workdir}" \
   "$image" sh -c "$cmd \"\$@\"" sh "$@" </dev/null || rc=$?

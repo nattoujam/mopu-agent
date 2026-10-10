@@ -7,7 +7,7 @@ sandbox（Linux では bubblewrap）が OS レベルで引き、その中では�
 
 | | 方針 | 実現 |
 |---|---|---|
-| 書き込み | タスク用ディレクトリと一時ディレクトリだけ | sandbox の既定 |
+| 書き込み | worktree と一時ディレクトリだけ | sandbox の既定 |
 | 読み取り | 自由。ただし秘密は不可 | `~/.claude` `~/.ssh` `~/.aws` `~/.config` `config.env` `state/` App 鍵を `denyRead` |
 | 実行 | 自由（`node` も `npx` も `npm ci` も） | sandbox 内のコマンドは自動承認。allow リストは持たない |
 | 調査 | `WebFetch` / `WebSearch` は自由 | permission で allow |
@@ -19,24 +19,26 @@ GitHub の認証情報はエージェントに渡らない。
 ### 作業ディレクトリの構成
 
 ```
-worktrees/<owner>__<repo>/<task-id>/                        ← 書き込みを許す範囲
-worktrees/<owner>__<repo>/<task-id>/repo/                   ← git worktree（エージェントの cwd）
-worktrees/<owner>__<repo>/<task-id>/.mopu-agent-plan.json   ← タスク分解の受け渡し用
-worktrees/<owner>__<repo>/<task-id>/.npm-cache, .cache/     ← npm / XDG のキャッシュ
+worktrees/<owner>__<repo>/<task-id>/repo/                         ← git worktree（エージェントの cwd、書き込みを許す範囲）
+worktrees/<owner>__<repo>/<task-id>/repo/.mopu-agent-plan.json    ← タスク分解の受け渡し用
+worktrees/<owner>__<repo>/<task-id>/repo/.mopu-agent-replies.json ← コメントごとの返信の受け渡し用
+worktrees/<owner>__<repo>/<task-id>/repo/.npm-cache, .cache/      ← npm / XDG のキャッシュ
 ```
 
-plan とキャッシュをリポジトリの外に置くことで、`git status` の結果をそのまま
-「変更を残したか」の判定に使える。キャッシュは `~/.npm` や `~/.cache` が sandbox から
-書けないためタスク側に持たせており、タスクごとに作り直しになる。
+受け渡し用のファイルとキャッシュは `repos/<slug>/.git/info/exclude` で git から無視させるので、
+`git status` には現れず、コミットもされない。キャッシュはタスクごとに作り直しになる。
 
 ### ホストが後で実行する git を守る
 
 worktree のコミットは共有の `repos/<slug>/.git` に書かれるので、そこだけ書き込みを開けている。
-ただし次の 3 つは閉じる。ホストが `git push` を実行するときに読まれ、任意コードの実行経路になるため。
+ただし次は閉じる。ホストが worktree で git を実行するときに読まれ、任意コードの実行経路になるため。
 
 - `repos/<slug>/.git/hooks`
 - `repos/<slug>/.git/config`
+- `repos/<slug>/.git/worktrees/<id>/commondir` と `gitdir`（config と hooks を探す先を決めるファイル）
 - `worktrees/<owner>__<repo>/<task-id>/repo/.git`（gitdir を指すファイル。書き換えると別の hooks を差し込める）
+
+無視リストのある `repos/<slug>/.git/info` も書き込みを閉じる。
 
 ### 通信
 
@@ -78,7 +80,7 @@ sudo systemctl reload apparmor
 
 - ネットワークにはつながらない（`--network none`）。依存は sandbox の中か `SETUP_CMD` で先に入れておく。
   DB などのサービスや外部 API が要る検証は回せない
-- マウントするのはタスクの作業ディレクトリ（`worktrees/<owner>__<repo>/<task-id>/`）だけ。
+- マウントするのは worktree（`worktrees/<owner>__<repo>/<task-id>/repo/`）だけ。
   worktree の `.git` は読み取り専用の控えで覆うので、コンテナの中では `git` が使えない
 - ホストのユーザーの uid/gid で、ケーパビリティなしで動く。`HOME` は `/tmp`
 - `/dev/shm` は 1 GB。`--ipc=host` は付けない

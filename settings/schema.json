@@ -55,7 +55,7 @@
     "container_checks": {
       "env": "CONTAINER_CHECKS", "type": "records", "key": "name", "key_from": "container_check", "default": [],
       "key_conflict": "イメージ（タグを除く）とコマンドが同じ検証がほかの行にあります",
-      "label": "コンテナで回す検証", "help": "エージェントが tools/run-container で実行する。ネットワークなしで、タスクの作業ディレクトリだけをマウントして動く",
+      "label": "コンテナで回す検証", "help": "エージェントが tools/run-container で実行する。ネットワークなしで、作業ツリーだけをマウントして動く",
       "fields": {
         "image": {
           "type": "string", "default": "", "required": true, "pattern": "^[A-Za-z0-9._/:@-]+$",
