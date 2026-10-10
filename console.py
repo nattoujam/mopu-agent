@@ -87,20 +87,22 @@ def poll_lock_held():
 
 
 def spend_summary():
-    total = 0.0
-    count = 0
+    by_repo = {}
     last = None
     for line in read_text(SPEND_FILE).splitlines():
         try:
             entry = json.loads(line)
         except ValueError:
             continue
-        total += float(entry.get("cost_usd") or 0)
-        count += 1
+        slot = by_repo.setdefault(entry.get("repo") or "", {"total_usd": 0.0, "tasks": 0})
+        slot["total_usd"] += float(entry.get("cost_usd") or 0)
+        slot["tasks"] += 1
         last = entry
     return {
-        "total_usd": round(total, 4),
-        "tasks": count,
+        "by_repo": [
+            {"repo": repo, "total_usd": round(slot["total_usd"], 4), "tasks": slot["tasks"]}
+            for repo, slot in sorted(by_repo.items())
+        ],
         "last_task": (last or {}).get("task"),
         "last_time": (last or {}).get("time"),
         "pct_5h": (last or {}).get("pct_5h_after"),

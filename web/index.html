@@ -113,6 +113,11 @@ input:disabled { opacity: .6; }
 .settings-actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
 .settings-actions .msg { margin: 0; }
 #appBox dl.kv dd { text-align: left; }
+.cost-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+.cost-repo { font-size: 12px; color: var(--muted); word-break: break-all; margin-bottom: 6px; }
+.cost-stats { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); }
+.cost-stats b { font-size: 15px; font-weight: 600; color: var(--fg); }
+.cost-stats small { font-size: 11px; color: var(--muted); margin-left: 4px; }
 .repo-block { border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; margin-bottom: 10px; }
 .repo-block[open] { padding-bottom: 12px; }
 .repo-block summary { cursor: pointer; padding: 10px 0; font-family: var(--mono); font-size: 13px; }
@@ -302,10 +307,11 @@ dl.fields dd {
         <dt>実行間隔</dt><dd id="kvInterval">—</dd>
         <dt>最終ポーリング</dt><dd id="kvLastPoll">—</dd>
         <dt>poll.lock</dt><dd id="kvLock">—</dd>
-        <dt>累計コスト</dt><dd id="kvCost">—</dd>
         <dt>直近の 5h 枠</dt><dd id="kvPct">—</dd>
       </dl>
     </div>
+
+    <div id="kvCost"></div>
 
     <div class="card">
       <h2>スケジュール</h2>
@@ -444,7 +450,27 @@ function render() {
   $('kvInterval').textContent = fmtInterval(sc.interval_seconds);
   $('kvLastPoll').textContent = status.poll.last_poll_at || '—';
   $('kvLock').textContent = status.poll.lock_held ? '保持中' : '空き';
-  $('kvCost').textContent = `$${(sp.total_usd || 0).toFixed(4)} / ${sp.tasks} タスク`;
+  $('kvCost').replaceChildren(...sp.by_repo.map(r => {
+    const box = document.createElement('div');
+    box.className = 'cost-box';
+    const name = document.createElement('div');
+    name.className = 'cost-repo';
+    name.textContent = r.repo || '(repo 不明)';
+    const stats = document.createElement('div');
+    stats.className = 'cost-stats';
+    const stat = (value, unit) => {
+      const el = document.createElement('span');
+      const num = document.createElement('b');
+      num.textContent = value;
+      const small = document.createElement('small');
+      small.textContent = unit;
+      el.append(num, small);
+      return el;
+    };
+    stats.append(stat(r.tasks, 'タスク'), stat(`$${r.total_usd.toFixed(4)}`, '累計'));
+    box.append(name, stats);
+    return box;
+  }));
   $('kvPct').textContent = sp.pct_5h != null ? sp.pct_5h + '%' : '—';
 
   $('toggleBtn').textContent = sc.enabled ? '一時停止' : '再開';
