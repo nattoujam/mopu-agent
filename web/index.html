@@ -118,6 +118,8 @@ input:disabled { opacity: .6; }
 .cost-stats { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); }
 .cost-stats b { font-size: 15px; font-weight: 600; color: var(--fg); }
 .cost-stats small { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.cost-stats + .cost-stats { margin-top: 6px; }
+.cost-cats { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .repo-block { border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; margin-bottom: 10px; }
 .repo-block[open] { padding-bottom: 12px; }
 .repo-block summary { cursor: pointer; padding: 10px 0; font-family: var(--mono); font-size: 13px; }
@@ -469,6 +471,21 @@ function render() {
     };
     stats.append(stat(r.tasks, 'タスク'), stat(`$${r.total_usd.toFixed(4)}`, '累計'));
     box.append(name, stats);
+    const m = r.loop;
+    if (m && m.merged_prs) {
+      const loop = document.createElement('div');
+      loop.className = 'cost-stats';
+      loop.append(
+        stat(`${m.merged_prs_with_followups}/${m.merged_prs}`, '差し戻し PR'),
+        stat(m.cost_per_merged_pr != null ? `$${m.cost_per_merged_pr.toFixed(2)}` : '—', 'PR あたり'),
+        stat(m.denials, '拒否'),
+      );
+      const cats = document.createElement('div');
+      cats.className = 'cost-cats';
+      cats.textContent = Object.entries(m.categories || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`)
+        .concat(m.unclassified ? [`未分類 ${m.unclassified}`] : []).join(' / ') || '差し戻しなし';
+      box.append(loop, cats);
+    }
     return box;
   }));
   $('kvPct').textContent = sp.pct_5h != null ? sp.pct_5h + '%' : '—';

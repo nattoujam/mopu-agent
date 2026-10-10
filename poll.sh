@@ -90,6 +90,7 @@ poll_all_repos() {
   done
   rm -f "$report"
   log "全リポジトリの処理を終えました（計 $total 件）"
+  (( DRY_RUN )) || "$AGENT_DIR/tools/loop-metrics" >/dev/null || warn "ループの計測に失敗しました"
   return "$failed"
 }
 

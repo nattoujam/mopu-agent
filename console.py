@@ -22,6 +22,7 @@ SETTINGS_FILE = STATE_DIR / "settings.json"
 SCHEMA = json.loads((AGENT_DIR / "settings" / "schema.json").read_text())
 RUNS_FILE = STATE_DIR / "console-runs.jsonl"
 SPEND_FILE = STATE_DIR / "spend.jsonl"
+LOOP_METRICS_FILE = STATE_DIR / "loop-metrics.json"
 POLL_LOCK = STATE_DIR / "poll.lock"
 SECRETS_DIR = STATE_DIR / "secrets"
 APP_KEY_FILE = SECRETS_DIR / "github-app.pem"
@@ -98,11 +99,22 @@ def spend_summary():
         slot["total_usd"] += float(entry.get("cost_usd") or 0)
         slot["tasks"] += 1
         last = entry
+    try:
+        metrics = json.loads(read_text(LOOP_METRICS_FILE) or "{}")
+    except ValueError:
+        metrics = {}
+    loop_by_repo = {m.get("repo"): m for m in metrics.get("by_repo") or []}
     return {
         "by_repo": [
-            {"repo": repo, "total_usd": round(slot["total_usd"], 4), "tasks": slot["tasks"]}
+            {
+                "repo": repo,
+                "total_usd": round(slot["total_usd"], 4),
+                "tasks": slot["tasks"],
+                "loop": loop_by_repo.get(repo),
+            }
             for repo, slot in sorted(by_repo.items())
         ],
+        "loop_generated_at": metrics.get("generated_at"),
         "last_task": (last or {}).get("task"),
         "last_time": (last or {}).get("time"),
         "pct_5h": (last or {}).get("pct_5h_after"),
