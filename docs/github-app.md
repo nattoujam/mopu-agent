@@ -20,13 +20,14 @@ App の登録・秘密鍵の生成・インストールの操作手順は公式�
 | Webhook | **Active のチェックを外す**。既定は有効だが、ポーリング方式なので不要 |
 | Where can this GitHub App be installed? | Only on this account |
 
-Repository permissions は次の 4 つだけ与える。
+Repository permissions は次のものだけ与える。
 
 | 権限 | レベル | 用途 |
 |---|---|---|
 | Contents | Read and write | ブランチの push |
 | Issues | Read and write | コメント投稿、ラベル操作 |
 | Pull requests | Read and write | PR の作成、レビュアーの指定 |
+| Actions | Read-only。`DISPATCH_WORKFLOWS` を使うなら Read and write | エージェントが CI の結果と artifact を読む、ワークフローを起動する（[CI で検証する](isolation.md#ci-で検証する)） |
 | Metadata | Read-only | 必須（自動で付く） |
 
 ## コンソールで登録する
@@ -51,4 +52,3 @@ API にも出ない。フィンガープリントは GitHub の App 設定画面
   `state/settings.json` の `github_app` に入る。`state/` はエージェントの sandbox から読めない。
   鍵が 600 でないと `poll.sh` は起動を拒否する
 - コンソールと鍵のやりとりをするので、`CONSOLE_ALLOW_REMOTE=1` で公開するなら前段は必ず TLS にすること
-- **App が作成した PR は GitHub Actions を発火しない。** 対象リポジトリで CI を回しているなら影響する

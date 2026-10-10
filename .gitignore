@@ -8,3 +8,4 @@ APP_PRIVATE_KEY
 *.pem
 __pycache__/
 node_modules/
+CLAUDE.local.md
