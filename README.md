@@ -92,8 +92,9 @@ PR で指示した場合も、ブランチ・ラベル・sub issue は元 Issue 
 ## 制限
 
 - エージェントは sandbox の中で動く。書き込みは作業ディレクトリだけ、Bash からの通信は
-  パッケージレジストリと GitHub API だけで、`docker` は使えない。docker が要る検証はブランチを
-  push して CI に任せる。詳細は[実行環境と権限](docs/isolation.md)。
+  パッケージレジストリと GitHub API だけで、`docker` は使えない。docker が要る検証は、
+  設定に登録したものだけをホストのコンテナで回せる。それ以外はブランチを push して CI に任せる。
+  詳細は[実行環境と権限](docs/isolation.md)。
 - `poll.sh` 単体では自動起動しない（利用枠を張り付かせないため）。定期実行するなら
   [Web コンソール](docs/console.md)（`./console.sh`）を使う。間隔は控えめにすること。
 

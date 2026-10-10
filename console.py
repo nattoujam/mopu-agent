@@ -180,6 +180,18 @@ def effective_values(defs, saved):
     return {key: saved.get(key, d["default"]) for key, d in defs.items()}
 
 
+def container_check_key(row):
+    base = row["image"].rsplit("/", 1)[-1].split("@")[0].split(":")[0]
+    words = row["command"].split()
+    if words and words[-1] == "--":
+        words = words[:-1]
+    key = re.sub(r"[^A-Za-z0-9._:-]+", "-", "-".join([base, *words]))
+    return re.sub(r"-{2,}", "-", key).strip("-")
+
+
+RECORD_KEYS = {"container_check": container_check_key}
+
+
 def validate_value(d, value):
     kind = d["type"]
     if kind in ("string", "duration"):
@@ -190,6 +202,8 @@ def validate_value(d, value):
             raise ValueError("改行や制御文字は使えません")
         if kind == "duration" and not TIMEOUT_RE.match(value):
             raise ValueError("30m / 1h / 90s の形で指定してください")
+        if d.get("required") and not value:
+            raise ValueError("入力してください")
         if d.get("pattern") and not re.search(d["pattern"], value):
             raise ValueError("形式が正しくありません")
         return value
@@ -218,6 +232,26 @@ def validate_value(d, value):
         if d.get("required") and not items:
             raise ValueError("1 つ以上指定してください")
         return items
+    if kind == "records":
+        if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+            raise ValueError("オブジェクトの配列で指定してください")
+        fields, rows, keys = d["fields"], [], set()
+        for i, row in enumerate(value, 1):
+            unknown = sorted(set(row) - set(fields) - {d["key"]})
+            if unknown:
+                raise ValueError(f"{i} 行目: 未知の項目です: {unknown[0]}")
+            clean = {}
+            for key, f in fields.items():
+                try:
+                    clean[key] = validate_value(f, row.get(key, f["default"]))
+                except ValueError as exc:
+                    raise ValueError(f"{i} 行目の{f['label']}: {exc}") from None
+            key = RECORD_KEYS[d["key_from"]](clean)
+            if key in keys:
+                raise ValueError(f"{i} 行目: {d['key_conflict']}")
+            keys.add(key)
+            rows.append({d["key"]: key, **clean})
+        return rows
     raise ValueError(f"未知の型です: {kind}")
 
 

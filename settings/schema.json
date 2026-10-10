@@ -52,6 +52,29 @@
       "item_pattern": "^[A-Za-z0-9._-]+\\.ya?ml$",
       "label": "エージェントが起動してよいワークフロー", "help": "workflow_dispatch で起動を許すファイル名。デプロイ系は入れないこと"
     },
+    "container_checks": {
+      "env": "CONTAINER_CHECKS", "type": "records", "key": "name", "key_from": "container_check", "default": [],
+      "key_conflict": "イメージ（タグを除く）とコマンドが同じ検証がほかの行にあります",
+      "label": "コンテナで回す検証", "help": "エージェントが tools/run-container で実行する。ネットワークなしで、タスクの作業ディレクトリだけをマウントして動く",
+      "fields": {
+        "image": {
+          "type": "string", "default": "", "required": true, "pattern": "^[A-Za-z0-9._/:@-]+$",
+          "label": "イメージ", "help": "タグまで含めて書く"
+        },
+        "workdir": {
+          "type": "string", "default": "", "pattern": "^([A-Za-z0-9._@-]+(/[A-Za-z0-9._@-]+)*)?$",
+          "label": "作業ディレクトリ", "help": "リポジトリ直下からの相対パス。空ならリポジトリ直下"
+        },
+        "command": {
+          "type": "string", "default": "", "required": true,
+          "label": "コマンド", "help": "sh -c で実行する。エージェントが渡した引数は末尾に足される"
+        },
+        "timeout": {
+          "type": "duration", "default": "10m",
+          "label": "タイムアウト", "help": "例: 10m"
+        }
+      }
+    },
     "setup_cmd": {
       "env": "SETUP_CMD", "type": "string", "default": "",
       "label": "依存の準備コマンド", "help": "タスク開始前に worktree の中でホストが実行する（sandbox の外）。例: npm ci --prefer-offline"

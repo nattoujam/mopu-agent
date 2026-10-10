@@ -68,10 +68,33 @@ sudo systemctl reload apparmor
 `failIfUnavailable` を立てているので、sandbox が起動できない環境ではタスクが始まらない。
 `poll.sh` の起動時にも `bwrap` の自己診断で落とす。
 
+## コンテナで検証する
+
+`docker` は sandbox と非互換で、中では動かない。コンテナが要る検証（VRT など）は、
+コンソールの「コンテナで回す検証」に登録すると、エージェントが `tools/run-container` で
+ホストの docker を使って実行できる。ホストのユーザーが docker を使えることが前提になる。
+
+コンテナの中ではエージェントが書き換えたコードが動く。閉じ込めは sandbox ではなく docker の隔離に任せる。
+
+- ネットワークにはつながらない（`--network none`）。依存は sandbox の中か `SETUP_CMD` で先に入れておく。
+  DB などのサービスや外部 API が要る検証は回せない
+- マウントするのはタスクの作業ディレクトリ（`worktrees/<owner>__<repo>/<task-id>/`）だけ。
+  worktree の `.git` は読み取り専用の控えで覆うので、コンテナの中では `git` が使えない
+- ホストのユーザーの uid/gid で、ケーパビリティなしで動く。`HOME` は `/tmp`
+- `/dev/shm` は 1 GB。`--ipc=host` は付けない
+- rootful の docker では、コンテナからの脱出がそのままホストの root 権限になる。可能なら rootless docker を使う
+
+イメージはタグまで含めて書く。Playwright のようにイメージの版を依存の版と揃える必要があるものは、
+依存を上げるときに設定のイメージも合わせて書き換える。
+
+エージェントは登録した検証からどれを回すかと、追加の引数しか選べない。引数は登録したコマンドの末尾に足される。
+`npm run` なら、コマンドを `npm run vrt:exec --` のように `--` で終えておく。
+
+Bash ツールの timeout は最大 10 分なので、それより長い検証はエージェントがバックグラウンドで起動する。
+
 ## CI で検証する
 
-`docker` は sandbox と非互換で、中では動かない。コンテナが要る検証（VRT など）は
-エージェントがブランチを push して CI に任せ、結果と artifact を `gh` で読む。
+登録していない検証は、エージェントがブランチを push して CI に任せ、結果と artifact を `gh` で読む。
 
 - push は `tools/push-branch` が sandbox の外で動く。`excludedCommands` は compound command の
   一部が一致すると全体を sandbox の外で走らせるため、`&&` で繋いだ呼び出しや `$(...)` を含む

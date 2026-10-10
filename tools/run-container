@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# エージェントがコンテナで検証を回すための唯一の入口。sandbox の外
+# （excludedCommands）で動き、コンテナの中ではエージェントが書き換えたコードが走る。
+# イメージとコマンドは設定から引き、エージェントが選べるのは検証のキーと追加の引数だけ
+set -euo pipefail
+
+usage() { echo "使い方: run-container <検証のキー> [引数 ...]" >&2; exit 2; }
+(( $# >= 1 )) || usage
+key="$1"; shift
+: "${MOPU_TASK_DIR:?}" "${MOPU_BRANCH:?}"
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+source "$AGENT_DIR/lib/workspace.sh"
+
+repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレクトリです"
+load_config "$repo" >/dev/null
+[[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
+
+check=$(jq -c --arg k "$key" 'first(.[] | select(.name == $k)) // empty' <<<"$CONTAINER_CHECKS")
+[[ -n $check ]] || die "この検証は登録されていません: $key（登録済み: $(jq -r 'map(.name) | join(" ") | if . == "" then "なし" else . end' <<<"$CONTAINER_CHECKS")）"
+field() { jq -r --arg k "$1" '.[$k] // ""' <<<"$check"; }
+command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
+
+# マウント元は task_dir にする。親の worktrees/<slug> は sandbox から書けないので
+# task_dir は差し替えられないが、中の repo/ はシンボリックリンクに差し替えられ、
+# マウント元にするとホストの任意のディレクトリをコンテナに渡してしまうため
+task_dir=$(realpath -e -- "$MOPU_TASK_DIR") || die "タスクディレクトリがありません"
+[[ ${task_dir%/*} == "$(realpath -e -- "$WORKTREES_DIR")" && ! -L $MOPU_TASK_DIR ]] \
+  || die "想定外のタスクディレクトリです"
+[[ $task_dir != *[,\"]* ]] || die "タスクディレクトリのパスに , や \" を含められません"
+wt="$task_dir/$REPO_SUBDIR"
+verify_workspace "$wt" || die "worktree の .git が書き換えられています"
+gitfile=$(<"$wt/.git")
+
+image=$(field image)
+workdir=$(field workdir)
+cmd=$(field command)
+limit=$(field timeout)
+
+# .git はホスト側の控えで覆う。コンテナから worktree の .git を書き換えられると、
+# ホストが後で実行する git に別の hooks や config を読ませられるため
+snap=$(mktemp)
+printf '%s\n' "$gitfile" > "$snap"
+# コンテナ名には : が使えないため
+cname="mopu-${task_dir##*/}-${key//[^A-Za-z0-9_.-]/-}-$$"
+cleanup() {
+  docker rm -f "$cname" >/dev/null 2>&1 || true
+  rm -f "$snap"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# --user の uid はイメージの passwd にないことが多く、HOME が書けない / になる。
+# そのままだと npm などがキャッシュを作れずに落ちるため HOME=/tmp を渡す
+echo "[run-container] $key: $image" >&2
+rc=0
+timeout "$limit" docker run --rm --name "$cname" --init \
+  --network none \
+  --user "$(id -u):$(id -g)" \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 4096 --shm-size 1g \
+  -e HOME=/tmp \
+  --mount "type=bind,src=$task_dir,dst=$task_dir" \
+  --mount "type=bind,src=$snap,dst=$wt/.git,readonly" \
+  -w "$wt${workdir:+/$workdir}" \
+  "$image" sh -c "$cmd \"\$@\"" sh "$@" </dev/null || rc=$?
+
+if ! verify_workspace "$wt" || [[ $(<"$wt/.git") != "$gitfile" ]]; then
+  die "検証の実行中に worktree の .git が書き換えられました。このタスクの push はできません"
+fi
+(( rc == 124 )) && err "[run-container] $limit で打ち切りました"
+exit "$rc"

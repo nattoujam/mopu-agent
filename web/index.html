@@ -132,6 +132,14 @@ input:disabled { opacity: .6; }
 .tag button { border: none; background: none; color: inherit; padding: 0 6px; font-size: 14px; line-height: 1.2; }
 .tag button:hover:not(:disabled) { color: var(--err); }
 .tags input.tag-input { flex: 1; min-width: 140px; width: auto; border: none; background: transparent; padding: 3px 4px; }
+.records { display: grid; gap: 8px; justify-items: start; }
+.record {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 12px; width: 100%;
+  border: 1px solid var(--line); border-radius: 6px; padding: 10px;
+}
+.field .record label { display: grid; align-content: start; gap: 3px; padding-top: 0; font-size: 12px; color: var(--muted); }
+.record .sub-hint { font-size: 11px; }
+.record .remove-record { justify-self: start; align-self: end; }
 button.danger { color: var(--err); border-color: rgba(239,122,122,.45); }
 input[type=file] { font-size: 12px; color: var(--muted); }
 button {
@@ -771,6 +779,11 @@ function fieldHtml(prefix, scope, key, d, value) {
     input = `<div class="tags" id="${id}" data-pattern="${esc(d.item_pattern || '')}">
         ${value.map(tagHtml).join('')}<input type="text" class="tag-input" id="${id}-input" placeholder="入力して Enter" autocomplete="off" spellcheck="false">
       </div>`;
+  } else if (d.type === 'records') {
+    recordDefs[id] = d;
+    input = `<div class="records" id="${id}">
+        ${value.map((row) => recordHtml(d, row)).join('')}<button type="button" class="add-record">行を追加</button>
+      </div>`;
   } else if (d.type === 'integer' || d.type === 'number') {
     const range = `${d.min != null ? ` min="${d.min}"` : ''}${d.max != null ? ` max="${d.max}"` : ''}`;
     input = `<input type="number" id="${id}" value="${esc(value)}"${range} step="${d.type === 'integer' ? 1 : 'any'}">`;
@@ -780,9 +793,34 @@ function fieldHtml(prefix, scope, key, d, value) {
   const def = Array.isArray(d.default) ? d.default.join(', ') : d.default;
   const help = [d.help, def !== '' && def != null ? `既定: ${def}` : null].filter(Boolean).join(' · ');
   return `<div class="field" data-field="${scope}.${key}">
-      <label for="${d.type === 'list' ? id + '-input' : id}">${esc(d.label)}</label>${input}
+      <label${d.type === 'records' ? '' : ` for="${d.type === 'list' ? id + '-input' : id}"`}>${esc(d.label)}</label>${input}
       <div class="hint" data-help="${esc(help)}">${esc(help)}</div>
     </div>`;
+}
+
+const recordDefs = {};
+
+function recordHtml(d, row) {
+  const cells = Object.entries(d.fields).map(([k, f]) => `
+      <label>${esc(f.label)}
+        <input type="text" data-sub="${esc(k)}" value="${esc(row[k] ?? f.default)}" autocomplete="off" spellcheck="false">
+        <span class="sub-hint">${esc(f.help || '')}</span>
+      </label>`).join('');
+  return `<div class="record">${cells}<button type="button" class="danger remove-record">この行を外す</button></div>`;
+}
+
+function bindRecords(root) {
+  root.querySelectorAll('.records').forEach((box) => {
+    const d = recordDefs[box.id];
+    box.onclick = (e) => {
+      if (e.target.closest('.add-record')) {
+        const blank = Object.fromEntries(Object.entries(d.fields).map(([k, f]) => [k, f.default]));
+        e.target.insertAdjacentHTML('beforebegin', recordHtml(d, blank));
+      } else if (e.target.closest('.remove-record')) {
+        e.target.closest('.record').remove();
+      }
+    };
+  });
 }
 
 function tagHtml(value) {
@@ -838,6 +876,11 @@ function readField(prefix, key, d) {
     const box = $(`f-${prefix}-${key}`);
     commitTags(box);
     return [...box.querySelectorAll('.tag')].map((t) => t.dataset.value);
+  }
+  if (d.type === 'records') {
+    return [...$(`f-${prefix}-${key}`).querySelectorAll('.record')]
+      .map((r) => Object.fromEntries([...r.querySelectorAll('[data-sub]')].map((i) => [i.dataset.sub, i.value.trim()])))
+      .filter((row) => Object.entries(row).some(([k, v]) => v !== '' && v !== d.fields[k].default));
   }
   const raw = $(`f-${prefix}-${key}`).value;
   if (d.type === 'integer' || d.type === 'number') return raw.trim() === '' ? null : Number(raw);
@@ -901,6 +944,7 @@ function renderSettings(data) {
   });
   bindTags($('settings'));
   bindTags($('globalBox'));
+  bindRecords($('settings'));
   loadApp();
 }
 

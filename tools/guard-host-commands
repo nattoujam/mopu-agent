@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse フック。push-branch / dispatch-workflow は excludedCommands なので、
+# PreToolUse フック。push-branch / dispatch-workflow / run-container は excludedCommands なので、
 # `&&` で繋いだ後半や $(...) まで sandbox の外で走る。単独の素直な呼び出し以外を弾く
 set -euo pipefail
 
@@ -17,6 +17,28 @@ deny() {
   exit 0
 }
 
+# シェルが単語の区切りとクォート以外に解釈する文字を含まないか。展開はホストの
+# 権限で走るので、クォートの外では区切りの空白と決まった記号だけを通す
+plain_words() {
+  local s="$1" c q="" i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    if [[ $q == "'" ]]; then
+      [[ $c == "'" ]] && q=""
+    elif [[ $q == '"' ]]; then
+      [[ $c == '"' ]] && q=""
+      [[ $c == [\$\`\\!] ]] && return 1
+    else
+      case $c in
+        "'" | '"') q="$c" ;;
+        [[:alnum:]] | [\ _.,:=/@%+-]) ;;
+        *) return 1 ;;
+      esac
+    fi
+  done
+  [[ -z $q ]]
+}
+
 case $command in
   *push-branch*)
     [[ $command == "$tools/push-branch" ]] \
@@ -25,5 +47,9 @@ case $command in
   *dispatch-workflow*)
     [[ $command =~ ^"$tools/dispatch-workflow"( [A-Za-z0-9_.=\'\"/-]+)+$ ]] \
       || deny "dispatch-workflow は単独で、引数は <workflow.yml> [key=value ...] だけにすること: $tools/dispatch-workflow"
+    ;;
+  *run-container*)
+    [[ $command =~ ^"$tools/run-container "[A-Za-z0-9._:-]+( |$) ]] && plain_words "${command#"$tools/run-container "}" \
+      || deny "run-container は単独で呼ぶこと。パイプ・リダイレクト・変数やコマンドの展開・ワイルドカードは使えない（引数に含めるならクォートで囲む）: $tools/run-container <キー> [引数 ...]"
     ;;
 esac

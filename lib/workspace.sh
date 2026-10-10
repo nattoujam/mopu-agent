@@ -28,6 +28,7 @@ release_branch() {
   holder=$(git -C "$REPO_DIR" worktree list --porcelain \
     | awk -v b="refs/heads/$branch" '/^worktree /{w=$2} /^branch /{if ($2 == b) print w}')
   [[ -n $holder ]] || return 0
+  verify_workspace "$holder" || { err "worktree の .git が書き換えられています: $holder"; return 1; }
 
   if [[ -z $(git -C "$holder" status --porcelain 2>/dev/null) ]]; then
     log "前回の worktree を片付けます: $holder"
@@ -54,6 +55,7 @@ resume_workspace() {
   local branch="$1" task_dir="$2" wt
   wt=$(workspace_repo "$task_dir")
   [[ -e $wt/.git ]] || { err "引き継げる worktree がありません: $wt"; return 1; }
+  verify_workspace "$wt" || { err "worktree の .git が書き換えられています: $wt"; return 1; }
   git -C "$wt" checkout --quiet -B "$branch" || return 1
   workspace_identity "$wt"
 }
@@ -84,9 +86,25 @@ remove_workspace() {
   rm -rf "$task_dir"
 }
 
+# 使い方: verify_workspace <worktree>
+# worktree の .git と、それが指す管理ディレクトリが git の作ったままかを確かめる。
+# コンテナからは worktree を rename して偽の .git を置けるうえ、管理ディレクトリの
+# commondir は sandbox から書けるため、ホストが git を実行する前に通すこと
+verify_workspace() {
+  local wt="$1" real admin
+  [[ -d $wt && ! -L $wt && -f $wt/.git && ! -L $wt/.git ]] || return 1
+  real=$(realpath -e -- "$wt") || return 1
+  [[ $(<"$wt/.git") =~ ^gitdir:\ (.+)$ ]] || return 1
+  admin="${BASH_REMATCH[1]}"
+  [[ $admin == "$(realpath -e -- "$REPO_DIR")/.git/worktrees/"* && ${admin##*/worktrees/} != */* ]] || return 1
+  [[ -f $admin/gitdir && ! -L $admin/gitdir && $(<"$admin/gitdir") == "$real/.git" ]] || return 1
+  [[ -f $admin/commondir && ! -L $admin/commondir && $(<"$admin/commondir") == ../.. ]]
+}
+
 # 使い方: push_workspace <worktree> <ブランチ>
 push_workspace() {
   local wt="$1" branch="$2"
+  verify_workspace "$wt" || { err "worktree の .git が書き換えられています: $wt"; return 1; }
   local -a push_env=()
   use_github_app && push_env=(env "GIT_ASKPASS=$(app_git_askpass)" "GH_TOKEN=$GH_TOKEN")
   "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease

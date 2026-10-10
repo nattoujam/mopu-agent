@@ -57,7 +57,8 @@ settings_env() {
         $defs | to_entries[]
         | .value as $d
         | ($vals[.key] // $d.default) as $v
-        | if $d.type == "list" then
+        | if $d.type == "records" then "\($d.env)=\($v | tojson | @sh)"
+          elif $d.type == "list" then
             if $d.shell == "array" then "\($d.env)=(\($v | map(@sh) | join(" ")))"
             else "\($d.env)=\($v | join(" ") | @sh)" end
           else "\($d.env)=\($v | tostring | @sh)" end;

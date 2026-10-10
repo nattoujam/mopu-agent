@@ -272,7 +272,7 @@ build_agent_settings() {
   jq --arg wt "$wt" --arg task_dir "$task_dir" --arg repo_git "$REPO_DIR/.git" \
      --argjson secrets "$secrets_json" --arg tools "$tools" \
     'def abs: sub("^/"; "//");
-     ["\($tools)/push-branch", "\($tools)/dispatch-workflow *"] as $host_cmds
+     ["\($tools)/push-branch", "\($tools)/dispatch-workflow *", "\($tools)/run-container *"] as $host_cmds
      | .permissions.allow = (
         ["Read(\($task_dir | abs)/**)", "Edit(\($task_dir | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
@@ -440,6 +440,10 @@ run_task_body() {
   else
     sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）はできない。push で起動するワークフローだけが使える"
   fi
+  if [[ $CONTAINER_CHECKS != '[]' ]]; then
+    sys_prompt+=$'\n\n'"$(sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$AGENT_DIR/prompts/container.md")"
+    sys_prompt+=$'\n'"$(jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS")"
+  fi
   [[ -n $AGENT_GH_TOKEN ]] || sys_prompt+=$'\n\n'"この環境では \`gh\` は使えない（CI の結果は読めない）。push だけはできる。"
   [[ $kind == comment ]] && sys_prompt+=$'\n\n'"$(sed "s|%%REPLIES_FILE%%|$replies_file|g" "$AGENT_DIR/prompts/command.md")"
 
@@ -544,6 +548,15 @@ run_task_body() {
     set_labels "$number" "$LABEL_FAILED"
     post_report "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
       "$rc" "${result:-}" "${detail:-（stderr なし）}" "$(agent_relpath "$log_dir")")"
+    record_spend "$task_id" "$cost" "$pct_before" ""
+    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+    return 1
+  fi
+
+  if ! verify_workspace "$wt"; then
+    fail_task "$task_id" "worktree の .git が書き換えられています"
+    set_labels "$number" "$LABEL_FAILED"
+    post_report "$(printf 'worktree の `.git` が書き換えられていたため、push せずに止めました。\n\nworktree: `%s`' "$(agent_relpath "$wt")")"
     record_spend "$task_id" "$cost" "$pct_before" ""
     log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
     return 1
