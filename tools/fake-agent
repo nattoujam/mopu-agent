@@ -13,6 +13,7 @@ USAGE_7D="${FAKE_AGENT_USAGE_7D:-0}"
 RATE_LIMIT="${FAKE_AGENT_RATE_LIMIT:-}"
 SLEEP="${FAKE_AGENT_SLEEP:-0}"
 SESSION_ID="${FAKE_AGENT_SESSION_ID:-00000000-0000-4000-8000-fa4ea9e00000}"
+STRUCTURED="${FAKE_AGENT_STRUCTURED:-}"
 
 # エージェントは worktree 直下で起動される
 MARKER_FILE='mopu-agent-fake.md'
@@ -20,10 +21,12 @@ PLAN_FILE='.mopu-agent-plan.json'
 
 PROMPT=""
 RESUME_ID=""
+SCHEMA=""
 while (( $# )); do
   case "$1" in
-    -p|--print)  PROMPT="${2-}"; shift ;;
-    -r|--resume) RESUME_ID="${2-}"; shift ;;
+    -p|--print)    PROMPT="${2-}"; shift ;;
+    -r|--resume)   RESUME_ID="${2-}"; shift ;;
+    --json-schema) SCHEMA="${2-}"; shift ;;
   esac
   shift
 done
@@ -41,6 +44,14 @@ if [[ $PROMPT == "/usage" ]]; then
   emit --arg r "$(printf 'Current session: %s%% used · resets in 3h 20m\nCurrent week (all models): %s%% used · resets Mon, 9:00am' \
     "$USAGE_5H" "$USAGE_7D")" \
     '{type:"result", subtype:"success", is_error:false, result:$r, total_cost_usd:0, num_turns:0}'
+  exit 0
+fi
+
+# 差し戻しの分類や critic の判定のような構造化出力の呼び出し。作業ツリーには触れない
+if [[ -n $SCHEMA ]]; then
+  [[ -n $STRUCTURED ]] || { echo "fake-agent: --json-schema には FAKE_AGENT_STRUCTURED が必要です" >&2; exit 1; }
+  emit --argjson o "$STRUCTURED" --argjson c "$COST" \
+    '{type:"result", subtype:"success", is_error:false, result:($o | tojson), structured_output:$o, total_cost_usd:$c, num_turns:1}'
   exit 0
 fi
 

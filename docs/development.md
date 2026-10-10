@@ -31,6 +31,7 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/san
 | `FAKE_AGENT_COST` | `0.01` | `total_cost_usd` の値。`state/spend.jsonl` の検証に使う |
 | `FAKE_AGENT_SUB_ISSUES` | `2` | `plan` モードで作る sub issue の件数 |
 | `FAKE_AGENT_SESSION_ID` | `00000000-0000-4000-8000-fa4ea9e00000` | `result` に載せる会話 ID。`state/sessions.json` の検証に使う |
+| `FAKE_AGENT_STRUCTURED` | 空 | `--json-schema` 付きで呼ばれたときに `structured_output` として返す JSON。モードより優先し、作業ツリーには触れない。差し戻しの分類の検証に使う |
 
 Issue の作成やラベル操作は本物の GitHub を叩く。コンソールの設定で、対象リポジトリには検証用のものを指定すること。
 
@@ -64,6 +65,7 @@ tools/dispatch-workflow エージェントが workflow_dispatch を起動する�
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 3 つを単独でしか呼べなくする PreToolUse フック
 tools/check-sandbox-placeholders sandbox の placeholder と無視リストの食い違いを調べる（開発用）
+tools/loop-metrics      差し戻し率・PR あたりのコスト・差し戻しの種類を集計する
 prompts/issue.md        エージェントへの追加システムプロンプト
 prompts/ci.md           push と CI の結果の読み方
 prompts/container.md    コンテナでの検証の回し方
