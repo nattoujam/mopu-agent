@@ -634,13 +634,13 @@ run_task_body() {
   (( pr_created )) || fallback="${result:-（応答なし）}"
   summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n推定コスト: $%s' \
     "$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )" \
-    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$cost")
+    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$(printf '%.2f' "$cost")")
   post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
   record_spend "$task_id" "$cost" "$pct_before" "$pct_after"
   remove_workspace "$task_dir"
-  log "[$task_id] 完了: $pr_url (推定 \$$cost, 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
+  log "[$task_id] 完了: $pr_url (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
   return 0
 }
