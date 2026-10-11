@@ -477,6 +477,10 @@ run_task_body() {
   else
     sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）はできない。push で起動するワークフローだけが使える"
   fi
+  # SETUP_CMD は & や | を含みうるので、sed の置換ではなく直接埋め込む
+  [[ -n $SETUP_CMD ]] && sys_prompt+=$'\n\n'"### 依存の準備
+
+依存は、作業ツリーの直下で \`$SETUP_CMD\` を実行して準備してある。パッケージマネージャでのインストールをやり直さず、そのまま型チェックやテストを実行する。依存はサブディレクトリではなく直下にまとめて置かれていることがあるので、サブディレクトリに依存のディレクトリが無いことは、準備されていない根拠にならない。"
   if [[ $CONTAINER_CHECKS != '[]' ]]; then
     sys_prompt+=$'\n\n'"$(sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$AGENT_DIR/prompts/container.md")"
     sys_prompt+=$'\n'"$(jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS")"
