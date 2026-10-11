@@ -54,9 +54,9 @@ record_spend() {
      --argjson cost "${cost:-0}" \
      --arg before "$before" --arg after "$after" \
      --arg outcome "$outcome" --argjson denials "${denials:-0}" \
-     --argjson task "${CURRENT_TASK_JSON:-null}" \
+     --argjson task "${CURRENT_TASK_JSON:-null}" --arg commit "${AGENT_COMMIT:-unknown}" \
      '{time:$t, repo:$repo, task:$id, cost_usd:$cost, pct_5h_before:$before, pct_5h_after:$after,
        issue:($task.number // null), kind:($task.kind // null),
-       outcome:(if $outcome == "" then null else $outcome end), denials:$denials}' \
+       outcome:(if $outcome == "" then null else $outcome end), denials:$denials, commit:$commit}' \
      >> "$SPEND_FILE"
 }

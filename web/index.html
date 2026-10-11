@@ -329,6 +329,16 @@ dl.fields dd {
       <div class="msg" id="msg"></div>
       <div class="hint">最短 60 秒。間隔は state/settings.json に保存され、再起動後も引き継がれる。</div>
     </div>
+
+    <div class="card">
+      <h2>ログの書き出し</h2>
+      <div class="row" id="dumpBtns">
+        <button data-days="7" style="flex:1">7 日</button>
+        <button data-days="30" style="flex:1">30 日</button>
+        <button data-days="0" style="flex:1">全部</button>
+      </div>
+      <div class="hint">タスクログ・コスト実績・ポーリング履歴を tar.gz で保存する。GitHub App の鍵は含めず、トークンらしき文字列は *** に置き換える。</div>
+    </div>
   </section>
 
   <section>
@@ -792,6 +802,10 @@ $('toggleBtn').onclick = async () => {
     note(status.scheduler.enabled ? 'スケジューラを再開しました' : 'スケジューラを停止しました', 'ok');
   } catch (e) { note(e.message, 'err'); }
 };
+
+$('dumpBtns').querySelectorAll('button').forEach((b) => {
+  b.onclick = () => { location.href = `/api/dump?days=${b.dataset.days}`; };
+});
 
 $('runNowBtn').onclick = async () => {
   try {

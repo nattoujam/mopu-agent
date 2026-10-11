@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
+import io
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -759,6 +761,83 @@ def task_detail(path):
     }
 
 
+DUMP_STATE_FILES = ("settings.json", "spend.jsonl", "console-runs.jsonl", "loop-metrics.json", "followup-categories.jsonl")
+STAMP_RE = re.compile(r"(\d{8})-(\d{6})(?:\.log)?$")
+# エージェントが環境変数やファイルを表示すると、stream.jsonl に認証情報がそのまま残るため
+SECRET_RE = re.compile(
+    rb"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|sk-ant-[A-Za-z0-9_-]{20,})"
+    rb"|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.S,
+)
+
+
+def agent_commit():
+    def git(*args):
+        return subprocess.run(["git", "-C", str(AGENT_DIR), *args], capture_output=True, text=True, check=True).stdout
+
+    try:
+        sha = git("rev-parse", "--short", "HEAD").strip()
+        return sha + ("-dirty" if git("status", "--porcelain").strip() else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def stamped_since(name, cutoff):
+    if cutoff is None:
+        return True
+    m = STAMP_RE.search(name)
+    if not m:
+        return True
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S") >= cutoff
+    except ValueError:
+        return True
+
+
+def dump_files(days):
+    cutoff = datetime.now() - timedelta(days=days) if days else None
+    files = [STATE_DIR / name for name in DUMP_STATE_FILES]
+    if (STATE_DIR / "repos").is_dir():
+        files += sorted((STATE_DIR / "repos").rglob("*"))
+    files += [log for log in sorted(RUN_LOG_DIR.glob("*.log")) if stamped_since(log.name, cutoff)]
+    files += [f for task in task_ids() if stamped_since(task.name, cutoff) for f in sorted(task.rglob("*"))]
+    return [f for f in files if f.is_file() and not f.is_symlink()]
+
+
+def build_dump(days):
+    commit = agent_commit()
+    root = f"mopu-dump-{datetime.now():%Y%m%d-%H%M%S}-{commit}"
+    redacted = 0
+    count = 0
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+
+        def add(arcname, data):
+            info = tarfile.TarInfo(f"{root}/{arcname}")
+            info.size = len(data)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(data))
+
+        for path in dump_files(days):
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            data, n = SECRET_RE.subn(b"***", data)
+            redacted += n
+            count += 1
+            add(str(path.relative_to(AGENT_DIR)), data)
+        manifest = {
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "commit": commit,
+            "days": days,
+            "files": count,
+            "redacted": redacted,
+        }
+        add("dump.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+    return f"{root}.tar.gz", buf.getvalue()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "mopu-console"
     protocol_version = "HTTP/1.1"
@@ -766,13 +845,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -837,6 +918,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(500, "state/settings.json が壊れています")
         if path == "/api/tasks":
             return self._json({"tasks": [task_summary(d) for d in task_ids()[:100]]})
+        if path == "/api/dump":
+            days = parse_qs(urlparse(self.path).query).get("days", ["0"])[0]
+            if not days.isdigit():
+                return self._error(400, "days は 0 以上の整数で指定してください")
+            name, data = build_dump(int(days))
+            return self._send(200, data, "application/gzip", {"Content-Disposition": f'attachment; filename="{name}"'})
         if path.startswith("/api/runs/"):
             name = path[len("/api/runs/"):]
             if not ID_RE.match(name) or not name.endswith(".log"):
