@@ -35,6 +35,8 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/san
 
 Issue の作成やラベル操作は本物の GitHub を叩く。コンソールの設定で、対象リポジトリには検証用のものを指定すること。
 
+学習と棚卸しのタスクは、`FAKE_AGENT_STRUCTURED='{"issues":[{"title":"…","body":"…"}]}'` で Issue を作り、`'{"issues":[]}'` で何も出さずに終わる。棚卸しは、`LEARN_TIDY_CHARS=100` のように閾値を下げると踏める。
+
 ## Claude Code を更新したとき
 
 Claude Code の sandbox が作業ディレクトリに置く書き込み禁止の placeholder は、バージョンによって変わる。
@@ -59,6 +61,7 @@ lib/discover.ts         タスク検出（ラベル / コメント）
 lib/workspace.sh        clone と worktree の管理
 lib/plan.sh             タスク分解の提案と承認（sub issue 作成）
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
+lib/learn.sh            差し戻しのあった PR から基準の案を作らせ、Issue として出す。棚卸しも行う
 lib/project-memory.sh   対象リポジトリの CLAUDE.md と rules をベースブランチから読み、プロンプトにする
 tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
@@ -77,9 +80,13 @@ prompts/command.md      コメントトリガー時に追記される断片
 prompts/decompose.md    タスク分解の判断基準
 prompts/project-memory.md 対象リポジトリの指示の前置き
 prompts/critic.md       critic のシステムプロンプト
+prompts/learn.md        差し戻しから基準を作るときの判断基準
+prompts/tidy.md         基準を棚卸しするときの判断基準
 settings/               エージェントの sandbox と権限の基本設定
 state/                  設定、コスト実績、GitHub App の鍵（secrets/）
-state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID
+state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID、
+                        学習済みの PR（learned-prs.txt）、学習が出した Issue（learn-issues.txt）、
+                        最後に棚卸ししたときの指示のハッシュ（learn-tidy）
 logs/<slug>/<task-id>/  stream-json の生ログ、stderr、生成された settings（slug は owner__repo）
 logs/console/           コンソールが起動した poll.sh の実行ログ
 ```

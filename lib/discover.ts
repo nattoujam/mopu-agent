@@ -33,7 +33,49 @@ export type CommentTask = {
   comments: CommentRef[];
 };
 
-export type Task = LabeledTask | CommentTask;
+export type LearnComment = {
+  id: string;
+  actor: string;
+  instruction: string;
+  url: string;
+  created_at: string;
+  path?: string;
+};
+
+export type LearnTask = {
+  kind: "learn";
+  number: number;
+  title: string;
+  body: string;
+  actor: string;
+  url: string;
+  issue: number;
+  issue_title: string;
+  issue_body: string;
+  merge_commit: string;
+  comments: LearnComment[];
+};
+
+export type Task = LabeledTask | CommentTask | LearnTask;
+
+export type SpendRun = {
+  task: string;
+  time: string;
+  repo?: string;
+  kind?: string | null;
+  issue?: number | null;
+};
+
+export type MergedPr = {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  headRefName: string;
+  createdAt: string;
+  mergedAt: string;
+  mergeCommit: { oid: string } | null;
+};
 
 export type RawComment = {
   id: number;
@@ -148,6 +190,69 @@ export const subIssueDeps = (
 ): number[] => {
   const siblings = node.parent?.subIssues?.nodes ?? [];
   return siblings.filter((s) => s.state === "OPEN" && s.number < node.number).map((s) => s.number);
+};
+
+const TASK_ID_RE = /^(issue|comment)-([0-9]+)-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})/;
+
+// 開始時刻はタスク ID にしか無い。タスク ID は記録の time と同じローカル時刻で書かれているため、
+// time のオフセットで UTC に直す。kind と issue を持たない古い記録も、タスク ID から補う
+export const parseRun = (r: SpendRun): { kind: string; issue: number; started: number } | null => {
+  const m = r.task.match(TASK_ID_RE);
+  if (!m) return null;
+  const [, kind = "", n, y, mo, d, h, mi, s] = m.map((v) => v ?? "");
+  const off = r.time.match(/([+-])([0-9]{2}):([0-9]{2})$/);
+  const offMin = off ? (off[1] === "-" ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) : 0;
+  const local = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+  return { kind: r.kind ?? kind, issue: r.issue ?? Number(n), started: local - offMin * 60_000 };
+};
+
+// PR ができてからマージされるまでに始まったコメント由来の実行を差し戻しとする。
+// tools/loop-metrics の差し戻しと同じ定義
+export const hasFollowups = (pr: MergedPr, runs: SpendRun[], repo: string, prefix: string): boolean => {
+  const issue = branchToIssueNumber(pr.headRefName, prefix);
+  if (issue === null) return false;
+  const from = Date.parse(pr.createdAt);
+  const to = Date.parse(pr.mergedAt);
+  return runs.some((r) => {
+    if ((r.repo ?? repo) !== repo) return false;
+    const p = parseRun(r);
+    return p !== null && p.kind === "comment" && p.issue === issue && p.started >= from && p.started <= to;
+  });
+};
+
+export const LEARN_MAX_FAILURES = 2;
+
+// learned-prs.txt は「PR 番号<TAB>結果」の行。失敗は数えて、上限までやり直す
+export const handledPrs = (learned: string): Set<number> => {
+  const failures = new Map<number, number>();
+  const done = new Set<number>();
+  for (const line of learned.split("\n")) {
+    const [n, status] = line.split("\t");
+    const number = Number(n);
+    if (!n || !Number.isInteger(number)) continue;
+    if (status === "failed") {
+      failures.set(number, (failures.get(number) ?? 0) + 1);
+      if ((failures.get(number) ?? 0) >= LEARN_MAX_FAILURES) done.add(number);
+    } else {
+      done.add(number);
+    }
+  }
+  return done;
+};
+
+// 古い順に学ぶ。後の PR の差し戻しは、前の PR で学んだ基準を踏まえて読むほうが重複を避けやすい
+export const nextLearnSource = (
+  prs: MergedPr[],
+  runs: SpendRun[],
+  learned: string,
+  repo: string,
+  prefix: string,
+): MergedPr | null => {
+  const handled = handledPrs(learned);
+  const pending = prs
+    .filter((pr) => pr.mergedAt && !handled.has(pr.number) && hasFollowups(pr, runs, repo, prefix))
+    .sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt));
+  return pending[0] ?? null;
 };
 
 
@@ -385,6 +490,87 @@ const listOpenAgentBranches = (cfg: Config): void => {
   }
 };
 
+const readJsonLines = <T>(file: string): T[] =>
+  (existsSync(file) ? readFileSync(file, "utf8") : "")
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as T];
+      } catch {
+        return [];
+      }
+    });
+
+// 差し戻しは PR の会話とレビュー、元 Issue のどれにでも書かれる。PR ができてから
+// マージされるまでに、タスクを受け付けるユーザーが書いたものだけを集める
+const fetchLearnComments = (cfg: Config, pr: MergedPr, issue: number): LearnComment[] => {
+  const from = pr.createdAt;
+  const to = pr.mergedAt;
+  const rows: LearnComment[] = [];
+  const push = (id: number, actor: string, body: string, url: string, at: string, path?: string): void => {
+    if (!body.trim() || body.includes(cfg.commentMarker)) return;
+    if (!isAllowedActor(actor, cfg.allowedActors)) return;
+    if (at < from || at > to) return;
+    rows.push({ id: String(id), actor, instruction: chomp(body), url, created_at: at, ...(path ? { path } : {}) });
+  };
+  for (const n of [pr.number, issue]) {
+    for (const c of ghJson<RestComment[]>(["api", `repos/${cfg.repo}/issues/${n}/comments?per_page=100`]) ?? []) {
+      push(c.id, c.user.login, c.body, c.html_url, c.created_at);
+    }
+  }
+  type ReviewComment = RestComment & { path?: string };
+  for (const c of ghJson<ReviewComment[]>(["api", `repos/${cfg.repo}/pulls/${pr.number}/comments?per_page=100`]) ?? []) {
+    push(c.id, c.user.login, c.body, c.html_url, c.created_at, c.path);
+  }
+  type Review = { id: number; body: string; user: { login: string }; html_url: string; submitted_at: string };
+  for (const r of ghJson<Review[]>(["api", `repos/${cfg.repo}/pulls/${pr.number}/reviews?per_page=100`]) ?? []) {
+    push(r.id, r.user.login, r.body ?? "", r.html_url, r.submitted_at ?? "");
+  }
+  return rows.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+};
+
+// 差し戻しがあってマージされた PR を、学習のタスクとして 1 件だけ返す。1 回のポーリングで
+// 何件も学ばせると、学習の Issue が一度に増えて読みきれないため
+const discoverLearnSource = (cfg: Config): void => {
+  const spendFile = process.env.SPEND_FILE ?? "";
+  const learnedFile = process.env.LEARNED_FILE ?? "";
+  if (!spendFile || !learnedFile) {
+    process.stderr.write("SPEND_FILE と LEARNED_FILE が渡されていません（load_config で export してください）\n");
+    process.exit(1);
+  }
+  const prs = ghJson<MergedPr[]>([
+    "pr",
+    "list",
+    "-R",
+    cfg.repo,
+    "--state",
+    "merged",
+    "--limit",
+    "500",
+    "--json",
+    "number,title,body,url,headRefName,createdAt,mergedAt,mergeCommit",
+  ]) ?? [];
+  const learned = existsSync(learnedFile) ? readFileSync(learnedFile, "utf8") : "";
+  const pr = nextLearnSource(prs, readJsonLines<SpendRun>(spendFile), learned, cfg.repo, cfg.branchPrefix);
+  if (!pr?.mergeCommit) return;
+  const issue = branchToIssueNumber(pr.headRefName, cfg.branchPrefix) as number;
+  const meta = ghJson<{ title: string; body: string }>(["issue", "view", String(issue), "-R", cfg.repo, "--json", "title,body"]);
+  emit({
+    kind: "learn",
+    number: pr.number,
+    title: chomp(pr.title),
+    body: chomp(pr.body ?? ""),
+    actor: "",
+    url: pr.url,
+    issue,
+    issue_title: chomp(meta?.title ?? ""),
+    issue_body: chomp(meta?.body ?? ""),
+    merge_commit: pr.mergeCommit.oid,
+    comments: fetchLearnComments(cfg, pr, issue),
+  });
+};
+
 // --retry は記録済みのコメントを再処理するので、同じ id が二度来る
 const markSeen = (id: string, cfg: Config): void => {
   if (!id) return;
@@ -414,8 +600,10 @@ const main = (): void => {
       return markSeen(rest[0] ?? "", cfg);
     case "init-baseline":
       return initSeenBaseline(cfg);
+    case "learn-source":
+      return discoverLearnSource(cfg);
     default:
-      process.stderr.write(`使い方: discover.ts labeled|comments|open-branches|mark-seen <id>|init-baseline\n`);
+      process.stderr.write(`使い方: discover.ts labeled|comments|open-branches|mark-seen <id>|init-baseline|learn-source\n`);
       process.exit(1);
   }
 };

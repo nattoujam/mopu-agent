@@ -82,6 +82,10 @@
     "setup_timeout": {
       "env": "SETUP_TIMEOUT", "type": "duration", "default": "10m",
       "label": "準備コマンドのタイムアウト", "help": "例: 10m"
+    },
+    "learn": {
+      "env": "LEARN_ENABLED", "type": "boolean", "default": false,
+      "label": "差し戻しから基準を学ぶ", "help": "差し戻しのあった PR がマージされたら、次から守る基準の案を Issue に出す。オンにすると過去の PR も対象になり、1 回のポーリングで 1 件ずつ処理する"
     }
   }
 }

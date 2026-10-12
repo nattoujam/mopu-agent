@@ -118,6 +118,7 @@ source "$AGENT_DIR/lib/workspace.sh"
 source "$AGENT_DIR/lib/plan.sh"
 source "$AGENT_DIR/lib/project-memory.sh"
 source "$AGENT_DIR/lib/run-task.sh"
+source "$AGENT_DIR/lib/learn.sh"
 # タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
 discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
 
@@ -200,6 +201,9 @@ else
   tasks=$(discover labeled)
   comments=$(discover comments)
   [[ -n $comments ]] && tasks=$(printf '%s\n%s' "$tasks" "$comments")
+  # 学習は人の依頼を待たせないよう、通常のタスクの後ろに並べる
+  learn=$(learn_tasks)
+  [[ -n $learn ]] && tasks=$(printf '%s\n%s' "$tasks" "$learn")
 fi
 
 tasks=$(grep -v '^$' <<<"$tasks")
@@ -214,11 +218,15 @@ log "$(wc -l <<<"$tasks") 件のタスクを検出しました"
 
 if (( DRY_RUN )); then
   while IFS= read -r t; do
-    line=$(jq -r '"  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"
+    line=$(jq -r 'if .kind == "learn" then "  [learn] #\(.number) \(.title)  ← 差し戻し \(.comments | length) 件から基準を学ぶ"
+                  elif .kind == "tidy" then "  [tidy] \(.title)  ← 指示が \(.chars) 文字"
+                  else "  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"
                   + (if ((.comments // []) | length) > 1
                      then "  ← コメント \(.comments | length) 件をまとめて処理"
-                     else "" end)' <<<"$t")
-    if is_approve_task "$t" >/dev/null; then
+                     else "" end) end' <<<"$t")
+    if [[ $(jq -r '.kind' <<<"$t") == learn || $(jq -r '.kind' <<<"$t") == tidy ]]; then
+      :
+    elif is_approve_task "$t" >/dev/null; then
       line+="  ← 分解案の承認（エージェントは起動しない）"
     elif blocking=$(sub_issue_deps "$t"); then
       line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
@@ -244,6 +252,18 @@ while IFS= read -r t <&3; do
   [[ -n $t ]] || continue
   (( processed >= MAX_TASKS_PER_RUN )) && { log "1回の上限 ($MAX_TASKS_PER_RUN 件) に達しました"; INCOMPLETE_RUN=1; break; }
   (( RATE_LIMIT_HIT )) && { warn "レート上限に達したため以降のタスクを中止します"; INCOMPLETE_RUN=1; STOP_ALL=1; break; }
+
+  # 学習のタスクは mopu-agent 自身が作るので、発行者・進行中 PR・sub-issue の判定を通さない。
+  # 対象の PR は learned-prs.txt で管理するので、打ち切っても last-poll には関わらない
+  kind=$(jq -r '.kind' <<<"$t")
+  if [[ $kind == learn || $kind == tidy ]]; then
+    gate || { log "利用枠のため以降のタスクを中止します"; STOP_ALL=1; break; }
+    ensure_repo
+    CURRENT_TASK_JSON="$t"
+    run_learn_task
+    (( processed++ ))
+    continue
+  fi
 
   actor=$(jq -r '.actor' <<<"$t")
   if ! is_allowed_actor "$actor"; then
@@ -277,7 +297,6 @@ while IFS= read -r t <&3; do
     break
   fi
 
-  kind=$(jq -r '.kind' <<<"$t")
   title=$(jq -r '.title' <<<"$t")
   body=$(jq -r '.body' <<<"$t")
 

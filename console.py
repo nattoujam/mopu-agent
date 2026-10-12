@@ -224,6 +224,10 @@ def validate_value(d, value):
         if d.get("pattern") and not re.search(d["pattern"], value):
             raise ValueError("形式が正しくありません")
         return value
+    if kind == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError("true か false で指定してください")
+        return value
     if kind in ("integer", "number"):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("数値で指定してください")
@@ -591,7 +595,7 @@ def task_summary(path):
 
     owner, _, repo = path.parent.name.partition("__")
     summary = {"id": task_id, "repo": f"{owner}/{repo}", "state": "unknown"}
-    m = re.match(r"^(issue|comment)-(\d+)-(\d{8})-(\d{6})$", path.name)
+    m = re.match(r"^(issue|comment|learn|tidy)-(\d+)-(\d{8})-(\d{6})$", path.name)
     if m:
         summary["kind"] = m.group(1)
         summary["number"] = int(m.group(2))

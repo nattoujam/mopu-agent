@@ -857,10 +857,12 @@ function fieldHtml(prefix, scope, key, d, value) {
   } else if (d.type === 'integer' || d.type === 'number') {
     const range = `${d.min != null ? ` min="${d.min}"` : ''}${d.max != null ? ` max="${d.max}"` : ''}`;
     input = `<input type="number" id="${id}" value="${esc(value)}"${range} step="${d.type === 'integer' ? 1 : 'any'}">`;
+  } else if (d.type === 'boolean') {
+    input = `<input type="checkbox" id="${id}"${value ? ' checked' : ''} style="width:auto;justify-self:start;margin:0">`;
   } else {
     input = `<input type="text" id="${id}" value="${esc(value)}" autocomplete="off" spellcheck="false">`;
   }
-  const def = Array.isArray(d.default) ? d.default.join(', ') : d.default;
+  const def = Array.isArray(d.default) ? d.default.join(', ') : d.type === 'boolean' ? (d.default ? 'オン' : 'オフ') : d.default;
   const help = [d.help, def !== '' && def != null ? `既定: ${def}` : null].filter(Boolean).join(' · ');
   return `<div class="field" data-field="${scope}.${key}">
       <label${d.type === 'records' ? '' : ` for="${d.type === 'list' ? id + '-input' : id}"`}>${esc(d.label)}</label>${input}
@@ -952,6 +954,7 @@ function readField(prefix, key, d) {
       .map((r) => Object.fromEntries([...r.querySelectorAll('[data-sub]')].map((i) => [i.dataset.sub, i.value.trim()])))
       .filter((row) => Object.entries(row).some(([k, v]) => v !== '' && v !== d.fields[k].default));
   }
+  if (d.type === 'boolean') return $(`f-${prefix}-${key}`).checked;
   const raw = $(`f-${prefix}-${key}`).value;
   if (d.type === 'integer' || d.type === 'number') return raw.trim() === '' ? null : Number(raw);
   return raw;

@@ -4,15 +4,21 @@ import {
   branchToIssueNumber,
   computeSince,
   extractInstruction,
+  handledPrs,
+  hasFollowups,
   hasTrigger,
   isAllowedActor,
   issueNumberFromUrl,
   isTriggerLine,
+  nextLearnSource,
+  parseRun,
   sortComments,
   stripCodeBlocks,
   subIssueDeps,
   utcStamp,
+  type MergedPr,
   type RawComment,
+  type SpendRun,
 } from "../lib/discover.ts";
 
 const T = "/claude";
@@ -149,4 +155,88 @@ describe("utcStamp", () => {
   it("ミリ秒を落とした Z 形式", () => {
     strictEqual(utcStamp(new Date("2026-09-06T12:34:56.789Z")), "2026-09-06T12:34:56Z");
   });
+});
+
+const REPO = "example/app";
+const P = "agent/issue-";
+
+const pr = (number: number, issue: number, createdAt: string, mergedAt: string): MergedPr => ({
+  number,
+  title: `PR ${number}`,
+  body: "",
+  url: `https://github.com/${REPO}/pull/${number}`,
+  headRefName: `${P}${issue}`,
+  createdAt,
+  mergedAt,
+  mergeCommit: { oid: "0".repeat(40) },
+});
+
+// タスク ID の時刻はローカル時刻（ここでは +09:00）
+const run = (task: string, extra: Partial<SpendRun> = {}): SpendRun => ({
+  task,
+  time: "2026-09-01T23:59:00+09:00",
+  repo: REPO,
+  ...extra,
+});
+
+describe("parseRun", () => {
+  it("タスク ID のローカル時刻を time のオフセットで UTC に直す", () => {
+    deepStrictEqual(parseRun(run("comment-12-20260901-120000")), {
+      kind: "comment",
+      issue: 12,
+      started: Date.parse("2026-09-01T03:00:00Z"),
+    });
+  });
+  it("負のオフセット", () => {
+    strictEqual(
+      parseRun(run("issue-3-20260901-120000", { time: "2026-09-01T13:00:00-04:30" }))?.started,
+      Date.parse("2026-09-01T16:30:00Z"),
+    );
+  });
+  it("記録にある kind と issue を優先する", () => {
+    deepStrictEqual(
+      parseRun(run("comment-12-20260901-120000", { kind: "issue", issue: 7 }))?.issue,
+      7,
+    );
+  });
+  it("学習のタスクは対象外", () => strictEqual(parseRun(run("learn-40-20260901-120000")), null));
+});
+
+describe("hasFollowups", () => {
+  const p = pr(40, 12, "2026-09-01T02:00:00Z", "2026-09-02T00:00:00Z");
+  it("PR ができた後のコメント由来の実行があれば差し戻しあり", () =>
+    strictEqual(hasFollowups(p, [run("comment-12-20260901-120000")], REPO, P), true));
+  it("PR ができる前のコメント（実装の依頼や分解の承認）は数えない", () =>
+    strictEqual(hasFollowups(p, [run("comment-12-20260901-100000")], REPO, P), false));
+  it("マージ後のコメントは数えない", () =>
+    strictEqual(hasFollowups(p, [run("comment-12-20260903-120000")], REPO, P), false));
+  it("Issue 由来の実行は数えない", () =>
+    strictEqual(hasFollowups(p, [run("issue-12-20260901-120000")], REPO, P), false));
+  it("別の Issue の実行は数えない", () =>
+    strictEqual(hasFollowups(p, [run("comment-13-20260901-120000")], REPO, P), false));
+  it("別のリポジトリの実行は数えない", () =>
+    strictEqual(hasFollowups(p, [run("comment-12-20260901-120000", { repo: "example/other" })], REPO, P), false));
+  it("エージェントのブランチでない PR は対象外", () =>
+    strictEqual(hasFollowups({ ...p, headRefName: "feature/x" }, [run("comment-12-20260901-120000")], REPO, P), false));
+});
+
+describe("handledPrs", () => {
+  it("結果が出たものと、失敗が上限に達したものを済みにする", () => {
+    deepStrictEqual(
+      [...handledPrs("40\tpr\n41\tno-change\n42\tfailed\n43\tfailed\n43\tfailed\n\n")].sort(),
+      [40, 41, 43],
+    );
+  });
+});
+
+describe("nextLearnSource", () => {
+  const runs = [run("comment-12-20260901-120000"), run("comment-14-20260905-120000")];
+  const a = pr(40, 12, "2026-09-01T02:00:00Z", "2026-09-06T00:00:00Z");
+  const b = pr(41, 14, "2026-09-05T02:00:00Z", "2026-09-05T12:00:00Z");
+  const c = pr(42, 15, "2026-09-05T02:00:00Z", "2026-09-05T06:00:00Z");
+  it("差し戻しのあった PR のうち、マージが古いものから返す", () =>
+    strictEqual(nextLearnSource([a, b, c], runs, "", REPO, P)?.number, 41));
+  it("済みの PR は飛ばす", () =>
+    strictEqual(nextLearnSource([a, b, c], runs, "41\tpr\n", REPO, P)?.number, 40));
+  it("無ければ null", () => strictEqual(nextLearnSource([a, b, c], runs, "40\tpr\n41\tpr\n", REPO, P), null));
 });

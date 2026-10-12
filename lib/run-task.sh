@@ -299,7 +299,8 @@ build_agent_settings() {
 # 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <プロンプト> <システムプロンプト> <設定ファイル> <ブランチ> [再開する会話 ID]
 invoke_agent() {
   local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" branch="$6" resume_id="${7:-}"
-  local -a resume_args=()
+  local -a resume_args=() schema_args=()
+  [[ -n ${AGENT_JSON_SCHEMA:-} ]] && schema_args=(--json-schema "$AGENT_JSON_SCHEMA")
 
   # --fork-session で会話を分岐させる。元の会話をそのまま残せるので、再開した
   # 先で失敗しても同じ地点から何度でもやり直せる
@@ -324,7 +325,7 @@ invoke_agent() {
     export npm_config_cache="$task_dir/$REPO_SUBDIR/.npm-cache" XDG_CACHE_HOME="$task_dir/$REPO_SUBDIR/.cache"
     # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
     timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
-      "${resume_args[@]}" \
+      "${resume_args[@]}" "${schema_args[@]}" \
       --settings "$settings" \
       --permission-mode dontAsk \
       --setting-sources '' \
