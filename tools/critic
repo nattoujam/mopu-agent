@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016  # jq の式を単引用符で渡すため
 # tools/ci-gate から呼ばれ、変更を書いたエージェントとは会話を共有しない別の claude -p に
 # 変更を確かめさせる。結果を {"verdict", "reasons", "cost_usd"} の JSON 1 行で stdout に出す。
-# diff や依頼の本文はエージェントや第三者が書いたものなので、critic にはツールも設定も渡さない。
+# diff や依頼の本文はエージェントや第三者が書いたものなので、critic にはツールを渡さず、設定は応答の言語だけを渡す。
 # hook と同じく sandbox の外で動くため、ツールが残っていると乗っ取られたときにホストで実行される
 set -uo pipefail
 
@@ -85,6 +85,7 @@ resp=$(cd "$work/cwd" && timeout "$LIMIT" "$CLAUDE_BIN" -p \
   --input-format stream-json --output-format stream-json --verbose \
   --append-system-prompt "$(cat "$AGENT_DIR/prompts/critic.md")" \
   --json-schema "$schema" --model "$MODEL" --tools "" \
+  --settings "$(jq -c '{language}' "$AGENT_DIR/settings/agent-settings.json")" \
   --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
   --permission-mode dontAsk < "$work/input.jsonl" 2>/dev/null)
 rc=$?
