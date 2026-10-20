@@ -65,9 +65,8 @@ lib/learn.sh            差し戻しのあった PR から基準の案を作ら�
 lib/project-memory.sh   対象リポジトリの CLAUDE.md と rules をベースブランチから読み、プロンプトにする
 tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
-tools/dispatch-workflow エージェントが workflow_dispatch を起動する入口（同上、許可リスト付き）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
-tools/guard-host-commands 上の 3 つを単独でしか呼べなくする PreToolUse フック
+tools/guard-host-commands 上の 2 つを単独でしか呼べなくする PreToolUse フック
 tools/ci-gate           HEAD の CI 結果が出るまでエージェントを終えさせない Stop フック
 tools/critic            ci-gate から呼ばれ、会話を共有しない claude -p に変更を確かめさせる
 lib/ci-gate.ts          ワークフローの起動条件から、PR の変更で CI が動くかを判定する
@@ -82,6 +81,7 @@ prompts/project-memory.md 対象リポジトリの指示の前置き
 prompts/critic.md       critic のシステムプロンプト
 prompts/learn.md        差し戻しから基準を作るときの判断基準
 prompts/tidy.md         基準を棚卸しするときの判断基準
+prompts/read-only.md    学習と棚卸しに追記される、書き込みの制限の断片
 settings/               エージェントの sandbox と権限の基本設定
 state/                  設定、コスト実績、GitHub App の鍵（secrets/）
 state/repos/<slug>/     リポジトリごとの処理済みコメント ID、ポーリング時刻、会話 ID、

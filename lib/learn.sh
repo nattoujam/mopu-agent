@@ -208,6 +208,7 @@ run_learn_task_body() {
   else
     sys_prompt=$(sed -e "s/%%CHARS%%/$LEARN_TIDY_CHARS/g" "$AGENT_DIR/prompts/tidy.md")
   fi
+  sys_prompt+=$'\n\n'"$(cat "$AGENT_DIR/prompts/read-only.md")"
 
   local memory
   memory=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH")
@@ -261,7 +262,7 @@ run_learn_task_body() {
     printf '%s\n' "$skipped" > "$log_dir/skipped.md"
     log "[$task_id] 案にしなかった差し戻し:"$'\n'"$skipped"
     issues=$(jq -c 'if (.issues | length) > 0
-      then .issues[-1].body += "\n\n## 案にしなかった差し戻し\n\n" + (.skipped | map("- \(.url): \(.reason)") | join("\n"))
+      then .issues[-1].body += "\n\n<details>\n<summary>案にしなかった差し戻し</summary>\n\n" + (.skipped | map("- \(.url): \(.reason)") | join("\n")) + "\n\n</details>"
       else . end' <<<"$issues")
   fi
 
