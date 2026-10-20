@@ -21,12 +21,12 @@ SANDBOX_PLACEHOLDERS=(
   /.claude/settings.json /.claude/settings.local.json /.claude/skills /.claude/workflows
 )
 
-# 計画・返信のファイルとキャッシュは worktree の中に置くが、git status を
+# 計画・返信・質問のファイルとキャッシュは worktree の中に置くが、git status を
 # 「エージェントが変更を残したか」の判定に使うため、git からは見えなくする
 ensure_excludes() {
   local f="$REPO_DIR/.git/info/exclude" p
   mkdir -p "${f%/*}"
-  for p in "/$PLAN_FILE_NAME" "/$REPLIES_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
+  for p in "/$PLAN_FILE_NAME" "/$REPLIES_FILE_NAME" "/$QUESTION_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
     grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
   done
 }

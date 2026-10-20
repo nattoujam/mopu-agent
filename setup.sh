@@ -35,6 +35,7 @@ setup_repo() {
   create_label "$LABEL_QUEUED"  "1d76db" "mopu-agent: 処理待ち"
   create_label "$LABEL_RUNNING" "fbca04" "mopu-agent: 実行中"
   create_label "$LABEL_AWAITING" "5319e7" "mopu-agent: 分解案の承認待ち"
+  create_label "$LABEL_AWAITING_INPUT" "c5def5" "mopu-agent: 質問への回答待ち"
   create_label "$LABEL_DONE"    "0e8a16" "mopu-agent: 完了"
   create_label "$LABEL_FAILED"  "d73a4a" "mopu-agent: 失敗"
 }

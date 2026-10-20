@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# PreToolUse フック。作業ツリーのファイルを書き換え始めたか、コミットしたところで、
+# タスクのフェーズを「実装」に進める。フェーズの記録のためだけのフックなので、
+# どの呼び出しも止めず、何も出力しない
+set -uo pipefail
+
+[[ -n ${MOPU_LOG_DIR:-} ]] || exit 0
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+file="$MOPU_LOG_DIR/$PHASE_FILE_NAME"
+phase=$(current_phase "$file")
+[[ $phase == triage || $phase == verify ]] || exit 0
+
+input=$(cat)
+case $(jq -r '.tool_name // ""' <<<"$input") in
+  Edit | Write | NotebookEdit)
+    # mopu-agent に渡すためのファイルは成果物ではないので数えない
+    case $(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input") in
+      */.mopu-agent-*) exit 0 ;;
+    esac
+    ;;
+  Bash)
+    [[ $(jq -r '.tool_input.command // ""' <<<"$input") =~ (^|[^[:alnum:]_-])git[[:space:]]+commit($|[[:space:]]) ]] || exit 0
+    ;;
+  *) exit 0 ;;
+esac
+
+detail=""
+[[ $phase == verify ]] && detail="検証の指摘を直す"
+record_phase "$file" implement "$detail"
+exit 0

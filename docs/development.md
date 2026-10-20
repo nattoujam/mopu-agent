@@ -11,8 +11,9 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/san
 
 | `FAKE_AGENT_MODE` | スタブの挙動 | 到達する終端 |
 |---|---|---|
-| `commit`（既定） | worktree にファイルを追加してコミット | push → PR 作成 → `agent:done` |
+| `commit`（既定） | worktree にファイルを追加してコミットし、CI の関門の判定を書く | push → PR を Open → `agent:done` |
 | `noop` | 何もせず結果だけ返す | 「コード変更なし」でコメントのみ |
+| `question` | `.mopu-agent-question.md` に質問を書く | 質問をコメント → `agent:awaiting-input` |
 | `dirty` | 編集するがコミットしない | 未コミット検知 → `agent:failed` |
 | `plan` | 妥当な `.mopu-agent-plan.json` を書く | 分解案をコメント → `agent:awaiting-approval` |
 | `badplan` | `sub_issues` が空の plan を書く | `validate_plan` 不合格 → `agent:failed` |
@@ -30,6 +31,7 @@ CLAUDE_BIN="./tools/fake-agent" FAKE_AGENT_MODE=dirty ./poll.sh --repo owner/san
 | `FAKE_AGENT_SLEEP` | `0` | 指定秒だけ待つ。`TASK_TIMEOUT` の検証に使う |
 | `FAKE_AGENT_COST` | `0.01` | `total_cost_usd` の値。`state/spend.jsonl` の検証に使う |
 | `FAKE_AGENT_SUB_ISSUES` | `2` | `plan` モードで作る sub issue の件数 |
+| `FAKE_AGENT_GATE` | `passed` | `commit` モードで書く CI の関門の判定。`failed` にすると PR が Draft のまま `agent:failed` になる |
 | `FAKE_AGENT_SESSION_ID` | `00000000-0000-4000-8000-fa4ea9e00000` | `result` に載せる会話 ID。`state/sessions.json` の検証に使う |
 | `FAKE_AGENT_STRUCTURED` | 空 | `--json-schema` 付きで呼ばれたときに `structured_output` として返す JSON。モードより優先し、作業ツリーには触れない。差し戻しの分類の検証に使う |
 
@@ -67,16 +69,21 @@ tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 2 つを単独でしか呼べなくする PreToolUse フック
+tools/track-phase       ファイルの書き換えとコミットを見て、フェーズを「実装」に進める PreToolUse フック
 tools/ci-gate           HEAD の CI 結果が出るまでエージェントを終えさせない Stop フック
 tools/critic            ci-gate から呼ばれ、会話を共有しない claude -p に変更を確かめさせる
 lib/ci-gate.ts          ワークフローの起動条件から、PR の変更で CI が動くかを判定する
 tools/check-sandbox-placeholders sandbox の placeholder と無視リストの食い違いを調べる（開発用）
 tools/loop-metrics      差し戻し率・PR あたりのコスト・差し戻しの種類を集計する
-prompts/issue.md        エージェントへの追加システムプロンプト
-prompts/ci.md           push と CI の結果の読み方
+prompts/agent.md        エージェントへの追加システムプロンプトの共通部分（フェーズの流れ、実行環境、入力の扱い）
+prompts/triage.md       把握のフェーズ（実装・分解・質問・回答の決め方）
+prompts/decompose.md    タスク分解の判断基準（分解しないタスクでは decompose-off.md に替わる）
+prompts/implement.md    実装のフェーズ
+prompts/verify.md       検証のフェーズ（push と CI の結果の読み方）
 prompts/container.md    コンテナでの検証の回し方
-prompts/command.md      コメントトリガー時に追記される断片
-prompts/decompose.md    タスク分解の判断基準
+prompts/report.md       報告のフェーズ（最終メッセージの行き先）
+prompts/pr-body.md      PR 本文のテンプレート
+prompts/command.md      コメントトリガー時に追記される断片（replies.md と組）
 prompts/project-memory.md 対象リポジトリの指示の前置き
 prompts/critic.md       critic のシステムプロンプト
 prompts/learn.md        差し戻しから基準を作るときの判断基準

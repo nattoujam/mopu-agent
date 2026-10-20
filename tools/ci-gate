@@ -26,6 +26,14 @@ update() {
   jq "$@" "$state" > "$state.tmp" && mv "$state.tmp" "$state"
 }
 
+phase_file="$MOPU_LOG_DIR/$PHASE_FILE_NAME"
+# Stop hook は終えようとするたびに呼ばれるので、同じ段階を重ねて記録しない
+enter_verify() {
+  local last
+  last=$(tail -1 "$phase_file" 2>/dev/null | jq -r '"\(.phase)/\(.detail // "")"' 2>/dev/null)
+  [[ $last == "verify/$1" ]] || record_phase "$phase_file" verify "$1"
+}
+
 # verdict: passed / failed / skipped / unverified
 finish() {
   update --arg v "$1" --arg d "${2:-}" '.verdict = $v | .detail = $d'
@@ -47,6 +55,7 @@ finish_reviewed() {
   local verdict="$1" detail="$2" review out reasons
   review=$(jq -r --arg h "$head" '.critic[$h].verdict // empty' "$state")
   if [[ -z $review ]]; then
+    enter_verify critic
     out=$("$AGENT_DIR/tools/critic")
     jq -e '.verdict' <<<"$out" >/dev/null 2>&1 || out='{"verdict":"error","reasons":["critic の出力を読めなかった"],"cost_usd":0}'
     update --arg h "$head" --argjson o "$out" '.critic[$h] = $o | .critic_cost_usd = ((.critic_cost_usd // 0) + ($o.cost_usd // 0))'
@@ -79,6 +88,7 @@ fi
 head=$(git -C "$wt" rev-parse HEAD) || finish unverified "HEAD を読めなかった"
 # この実行でコミットが増えていなければ、確かめる対象の変更が無い
 [[ $head == "${MOPU_HEAD_BEFORE:-}" ]] && exit 0
+enter_verify CI
 
 ref="origin/$MOPU_BASE_BRANCH"
 if git -C "$wt" log --format=%B "$ref..HEAD" 2>/dev/null \

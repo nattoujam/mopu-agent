@@ -258,6 +258,7 @@ dl.fields dd {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.phases { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 11px; }
 .detail-actions { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
 .detail-actions .hint { margin: 0 auto 0 0; }
 .detail-actions button { padding: 4px 10px; font-size: 12px; }
@@ -405,6 +406,17 @@ function fmtClock(epoch) {
   const d = new Date(epoch * 1000);
   const pad = (n) => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+// phases.jsonl のフェーズ名。終わりの状態もフェーズとして最後の行に入る
+const PHASE_LABELS = {
+  prepare: '準備', triage: '把握', implement: '実装', verify: '検証', publish: '公開',
+  review: 'レビュー待ち', 'awaiting-input': '回答待ち', 'awaiting-approval': '承認待ち', answered: '回答済み', failed: '失敗',
+};
+const PHASE_CLASS = { review: 'ok', answered: 'ok', failed: 'err' };
+function phaseBadge(phase, detail, at) {
+  const label = (PHASE_LABELS[phase] || phase) + (detail ? `（${detail}）` : '');
+  const when = at ? ' ' + fmtClock(Date.parse(at) / 1000) : '';
+  return `<span class="badge ${PHASE_CLASS[phase] || 'run'}">${esc(label + when)}</span>`;
 }
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -652,7 +664,7 @@ async function loadTasks() {
     return `<div class="item ${selected && selected.kind === 'task' && selected.id === t.id ? 'selected' : ''}" data-task="${esc(t.id)}">
       <span class="when">${fmtTime(t.started_at)}</span>
       <span class="title">${esc(t.repo || '?')} · ${esc(t.kind || '?')} #${esc(t.number ?? '?')}</span>
-      ${cost}<span class="badge ${cls}">${label}</span>
+      ${t.phase ? phaseBadge(t.phase, t.phase_detail) : ''}${cost}<span class="badge ${cls}">${label}</span>
     </div>`;
   }).join('');
   paintList('tasks:' + html, html, () => {
@@ -700,6 +712,7 @@ async function openTask(id) {
       <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
       ${retryable(s) ? `<button data-retry="${s.number}" data-retry-repo="${esc(s.repo)}">再実行</button>` : ''}
     </div>
+    ${data.phases.length ? `<div class="phases">${data.phases.map((p) => phaseBadge(p.phase, p.detail, p.at)).join('<span>→</span>')}</div>` : ''}
     ${s.failure ? `<div class="msg err" style="margin:0 0 12px">${esc(s.failure)}</div>` : ''}
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {

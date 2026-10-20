@@ -20,9 +20,12 @@ LABEL_RUNNING='agent:running'
 # shellcheck disable=SC2034
 LABEL_AWAITING='agent:awaiting-approval'
 # shellcheck disable=SC2034
+LABEL_AWAITING_INPUT='agent:awaiting-input'
+# shellcheck disable=SC2034
 LABEL_DONE='agent:done'
 # shellcheck disable=SC2034
 LABEL_FAILED='agent:failed'
+AGENT_LABELS=("$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_AWAITING_INPUT" "$LABEL_DONE" "$LABEL_FAILED")
 SETTINGS_FILE="$AGENT_DIR/state/settings.json"
 SETTINGS_SCHEMA="$AGENT_DIR/settings/schema.json"
 APP_KEY_FILE="$AGENT_DIR/state/secrets/github-app.pem"
@@ -31,6 +34,22 @@ log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 err()  { printf '%s \033[31m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 die()  { err "$*"; exit 1; }
+
+# shellcheck disable=SC2034  # run-task.sh / ci-gate / track-phase で参照
+PHASE_FILE_NAME='phases.jsonl'
+
+# タスクのフェーズの移り変わりを 1 行ずつ足す。最後の行が今のフェーズ
+record_phase() {
+  local file="$1" phase="$2" detail="${3:-}"
+  [[ -n $file && -d ${file%/*} ]] || return 0
+  jq -nc --arg p "$phase" --arg d "$detail" --arg t "$(date -Is)" \
+    '{phase: $p, at: $t} + (if $d == "" then {} else {detail: $d} end)' >> "$file"
+}
+
+current_phase() {
+  [[ -s $1 ]] || return 0
+  tail -1 "$1" | jq -r '.phase // empty' 2>/dev/null
+}
 
 # Issue コメントは公開されるため、サーバーのユーザー名を含む絶対パスは載せない
 agent_relpath() { printf '%s' "${1#"$AGENT_DIR"/}"; }
@@ -191,7 +210,7 @@ require_labels_ready() {
   local existing missing=() l
   existing=$(gh label list -R "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null) \
     || die "ラベル一覧を取得できませんでした: $REPO"
-  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_DONE" "$LABEL_FAILED"; do
+  for l in "${AGENT_LABELS[@]}"; do
     grep -qxF -- "$l" <<<"$existing" || missing+=("$l")
   done
   (( ${#missing[@]} == 0 )) \

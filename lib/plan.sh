@@ -90,6 +90,7 @@ propose_plan() {
   fi
 
   log "[$task_id] 分解案を提案します ($(jq '.sub_issues | length' "$plan") 件)"
+  task_phase awaiting-approval
   set_labels "$number" "$LABEL_AWAITING"
   post_report "$(render_plan_comment "$plan")"
 

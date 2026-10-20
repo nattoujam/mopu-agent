@@ -171,14 +171,17 @@ mark_task_seen() {
 }
 
 # 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
-# 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる
+# 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる。
+# 質問への回答を待っている Issue へのコメントも、着手済みのタスクの続きなので通す
 in_flight_blocked() {
-  local number="$1" b
+  local number="$1" kind="${2:-}" b
   (( MAX_OPEN_AGENT_PRS > 0 )) || return 1
   for b in "${OPEN_AGENT_BRANCHES[@]}"; do
     [[ $b == "${BRANCH_PREFIX}${number}" ]] && return 1
   done
-  (( OPEN_AGENT_PRS >= MAX_OPEN_AGENT_PRS ))
+  (( OPEN_AGENT_PRS >= MAX_OPEN_AGENT_PRS )) || return 1
+  [[ $kind == comment ]] || return 0
+  ! gh issue view "$number" -R "$REPO" --json labels --jq '.labels[].name' 2>/dev/null | grep -qxF -- "$LABEL_AWAITING_INPUT"
 }
 
 # --- タスクの収集 ---
@@ -230,7 +233,7 @@ if (( DRY_RUN )); then
       line+="  ← 分解案の承認（エージェントは起動しない）"
     elif blocking=$(sub_issue_deps "$t"); then
       line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
-    elif in_flight_blocked "$(jq -r '.number' <<<"$t")"; then
+    elif in_flight_blocked "$(jq -r '.number' <<<"$t")" "$(jq -r '.kind' <<<"$t")"; then
       line+="  ← 進行中の PR があるためスキップ"
     fi
     printf '%s\n' "$line"
@@ -282,7 +285,7 @@ while IFS= read -r t <&3; do
     log "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
     continue
   fi
-  if in_flight_blocked "$number"; then
+  if in_flight_blocked "$number" "$kind"; then
     log "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
     # ラベルは毎回引き直せるが、コメントは last-poll が進めば窓から外れて消える
     [[ $(jq -r '.kind' <<<"$t") == comment ]] && INCOMPLETE_RUN=1

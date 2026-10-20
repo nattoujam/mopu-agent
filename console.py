@@ -595,10 +595,22 @@ def own_cost(path, total):
     return max(float(total) - float(base), 0.0)
 
 
+def task_phases(path):
+    phases = []
+    for line in read_text(path / "phases.jsonl").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("phase"):
+            phases.append({k: entry.get(k) for k in ("phase", "at", "detail")})
+    return phases
+
+
 def task_summary(path):
     stream = path / "stream.jsonl"
     outcome_file = path / "outcome.json"
-    key = (file_key(stream), file_key(outcome_file))
+    key = (file_key(stream), file_key(outcome_file), file_key(path / "phases.jsonl"))
     task_id = f"{path.parent.name}/{path.name}"
     cached = _task_cache.get(task_id)
     if cached and cached[0] == key:
@@ -639,6 +651,10 @@ def task_summary(path):
         summary["failure"] = outcome.get("reason") or "失敗しました"
         if summary["state"] != "aborted":
             summary["state"] = "error"
+    phases = task_phases(path)
+    if phases:
+        summary["phase"] = phases[-1]["phase"]
+        summary["phase_detail"] = phases[-1]["detail"]
     _task_cache[task_id] = (key, summary)
     return summary
 
@@ -770,6 +786,7 @@ def task_detail(path):
             )
     return {
         "summary": task_summary(path),
+        "phases": task_phases(path),
         "events": events[-300:],
         "stderr": read_text(path / "stderr.log", limit=64 * 1024),
         "setup": read_text(path / "setup.log", limit=64 * 1024),

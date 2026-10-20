@@ -87,7 +87,7 @@ set_labels() {
     warn "ラベル '$add' を付けられませんでした（setup.sh でラベルを作成してください）。既存のラベルは変更しません"
     return 0
   fi
-  for l in "$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_DONE" "$LABEL_FAILED"; do
+  for l in "${AGENT_LABELS[@]}"; do
     [[ $l == "$add" ]] && continue
     gh issue edit "$issue" -R "$REPO" --remove-label "$l" >/dev/null 2>&1 || true
   done
@@ -259,6 +259,51 @@ build_prompt() {
   } | head -c 60000
 }
 
+QUESTION_FILE_NAME='.mopu-agent-question.md'
+
+build_system_prompt() {
+  local kind="$1" branch="$2" wt="$3" decompose_off="$4" p="$AGENT_DIR/prompts" text
+  {
+    cat "$p/agent.md"
+    [[ $kind == comment ]] && printf '\n' && cat "$p/command.md"
+
+    printf '\n'
+    sed "s|%%QUESTION_FILE%%|$wt/$QUESTION_FILE_NAME|g" "$p/triage.md"
+    printf '\n'
+    if [[ -n $decompose_off ]]; then
+      text=$(<"$p/decompose-off.md")
+      printf '%s\n' "${text//"%%REASON%%"/"$decompose_off"}"
+    else
+      sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" -e "s|%%PLAN_FILE%%|$wt/$PLAN_FILE_NAME|g" "$p/decompose.md"
+    fi
+
+    printf '\n'
+    cat "$p/implement.md"
+    # SETUP_CMD は & や | を含みうるので、sed ではなく bash の置換で埋め込む
+    if [[ -n $SETUP_CMD ]]; then
+      text=$(<"$p/setup.md")
+      printf '\n%s\n' "${text//"%%SETUP_CMD%%"/"$SETUP_CMD"}"
+    fi
+
+    printf '\n'
+    sed -e "s|%%PUSH_CMD%%|$AGENT_DIR/tools/push-branch|g" -e "s|%%BRANCH%%|$branch|g" "$p/verify.md"
+    if [[ $CONTAINER_CHECKS != '[]' ]]; then
+      printf '\n'
+      sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$p/container.md"
+      jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS"
+    fi
+    [[ -n $AGENT_GH_TOKEN ]] || { printf '\n'; cat "$p/no-gh.md"; }
+
+    printf '\n'
+    cat "$p/report.md"
+    printf '\n```markdown\n'
+    cat "$p/pr-body.md"
+    printf '```\n'
+    [[ $kind == comment ]] && printf '\n' && sed "s|%%REPLIES_FILE%%|$wt/$REPLIES_FILE_NAME|g" "$p/replies.md"
+    return 0
+  }
+}
+
 # 使い方: build_agent_settings <タスクディレクトリ> <出力ファイル>
 # パス制限は絶対パスでしか正しく効かないため、タスクごとに生成する
 # （"//" が絶対パスのプレフィックス）。Write ルールは Claude Code が参照しない
@@ -290,7 +335,9 @@ build_agent_settings() {
         ["Read(\($wt | abs)/**)", "Edit(\($wt | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
-     | .hooks.PreToolUse = [{matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]}]
+     | .hooks.PreToolUse = [
+        {matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]},
+        {matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($tools)/track-phase"}]}]
      | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/ci-gate", timeout: 600}]}]
      | .permissions.deny = (
         ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
@@ -316,10 +363,7 @@ invoke_agent() {
   if [[ -n $resume_id ]]; then
     resume_args=(--resume "$resume_id" --fork-session)
     # 同じタスク説明が会話の中で二度目になるため、新しい依頼ではないと断っておく
-    sys_prompt+=$'\n\n'"## 会話の再開について
-
-これは以前の会話の続きです。上のタスク説明は改めて渡したもので、新しい依頼では
-ありません。前回読んだファイルや下した判断は、そのまま引き継いで構いません。"
+    sys_prompt+=$'\n\n'"$(cat "$AGENT_DIR/prompts/resume.md")"
   fi
 
   (
@@ -376,6 +420,12 @@ ci_gate_report() {
 }
 
 TASK_OUTCOME_FILE=""
+TASK_PHASE_FILE=""
+
+task_phase() {
+  [[ -n $TASK_PHASE_FILE ]] || return 0
+  record_phase "$TASK_PHASE_FILE" "$@"
+}
 
 record_outcome() {
   [[ -n $TASK_OUTCOME_FILE ]] || return 0
@@ -386,6 +436,7 @@ record_outcome() {
 fail_task() {
   err "[$1] $2"
   record_outcome false "$2"
+  task_phase failed "$2"
 }
 
 # 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文>
@@ -393,12 +444,20 @@ fail_task() {
 run_task() {
   local rc=0
   TASK_OUTCOME_FILE=""
+  TASK_PHASE_FILE=""
   run_task_body "$@" || rc=$?
   if [[ -n $TASK_OUTCOME_FILE && ! -f $TASK_OUTCOME_FILE ]]; then
     if (( rc == 0 )); then record_outcome true; else record_outcome false "終了コード $rc で中断しました"; fi
   fi
   TASK_OUTCOME_FILE=""
+  TASK_PHASE_FILE=""
   return "$rc"
+}
+
+# CI の関門と critic を抜けたか。critic が動かなかった（error）ときは、変更の問題ではないので止めない
+gate_passed() {
+  jq -e '(.verdict == "passed" or .verdict == "skipped")
+         and ((.critic_verdict // "") | IN("revise", "unresolved") | not)' "$1/ci-gate.json" >/dev/null 2>&1
 }
 
 run_task_body() {
@@ -424,11 +483,14 @@ run_task_body() {
   local wt="$task_dir/repo"
   local plan_file="$wt/$PLAN_FILE_NAME"
   local replies_file="$wt/$REPLIES_FILE_NAME"
-  # --retry で引き継いだ作業ツリーには前回の返信が残っている
-  rm -f "$replies_file"
+  local question_file="$wt/$QUESTION_FILE_NAME"
+  # --retry で引き継いだ作業ツリーには前回の返信と質問が残っている
+  rm -f "$replies_file" "$question_file"
   local log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
   TASK_OUTCOME_FILE="$log_dir/outcome.json"
+  TASK_PHASE_FILE="$log_dir/$PHASE_FILE_NAME"
+  task_phase prepare
   [[ -n ${CURRENT_TASK_JSON:-} ]] \
     && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \
       > "$log_dir/$TASK_FILE_NAME"
@@ -473,43 +535,24 @@ run_task_body() {
     fi
   fi
 
-  local sys_prompt no_decompose=0
-  sys_prompt=$(cat "$AGENT_DIR/prompts/issue.md")
   AGENT_GH_TOKEN=""
   if use_github_app; then
     AGENT_GH_TOKEN=$(app_token_with "$AGENT_TOKEN_PERMISSIONS") \
       || warn "[$task_id] エージェント用トークンを取得できません。App に Actions: Read を付与すると CI の結果を読めます"
   fi
-  sys_prompt+=$'\n\n'"$(sed -e "s|%%PUSH_CMD%%|$AGENT_DIR/tools/push-branch|g" \
-    -e "s|%%BRANCH%%|$branch|g" "$AGENT_DIR/prompts/ci.md")"
-  # SETUP_CMD は & や | を含みうるので、sed の置換ではなく直接埋め込む
-  [[ -n $SETUP_CMD ]] && sys_prompt+=$'\n\n'"### 依存の準備
-
-依存は、作業ツリーの直下で \`$SETUP_CMD\` を実行して準備してある。パッケージマネージャでのインストールをやり直さず、そのまま型チェックやテストを実行する。依存はサブディレクトリではなく直下にまとめて置かれていることがあるので、サブディレクトリに依存のディレクトリが無いことは、準備されていない根拠にならない。"
-  if [[ $CONTAINER_CHECKS != '[]' ]]; then
-    sys_prompt+=$'\n\n'"$(sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$AGENT_DIR/prompts/container.md")"
-    sys_prompt+=$'\n'"$(jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS")"
-  fi
-  [[ -n $AGENT_GH_TOKEN ]] || sys_prompt+=$'\n\n'"この環境では \`gh\` は使えない（CI の結果は読めない）。push だけはできる。"
-  [[ $kind == comment ]] && sys_prompt+=$'\n\n'"$(sed "s|%%REPLIES_FILE%%|$replies_file|g" "$AGENT_DIR/prompts/command.md")"
 
   # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
+  local no_decompose=0 decompose_off=""
   if [[ -n $prev_dir ]]; then
     no_decompose=1
-    sys_prompt+=$'\n\n'"## タスク分解について
-
-これは中断したタスクの再開です。分解せず、残っている作業を仕上げること。"
+    decompose_off="これは中断したタスクの再開なので、残っている作業を仕上げる。"
   elif is_sub_issue "$number" "$body"; then
     no_decompose=1
-    sys_prompt+=$'\n\n'"## タスク分解について
-
-この Issue は既に分解されたタスクの一部です。これ以上分解せず、そのまま実装すること。"
-  else
-    sys_prompt+=$'\n\n'"$(sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" \
-      -e "s|%%PLAN_FILE%%|$plan_file|g" "$AGENT_DIR/prompts/decompose.md")"
+    decompose_off="この Issue は既に分解されたタスクの一部なので、"
   fi
 
-  local memory
+  local sys_prompt memory
+  sys_prompt=$(build_system_prompt "$kind" "$branch" "$wt" "$decompose_off")
   memory=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH")
   if [[ -n $memory ]]; then
     sys_prompt+=$'\n\n'"$memory"
@@ -556,6 +599,7 @@ run_task_body() {
   fi
 
   local rc=0
+  task_phase triage
   invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "$resume_id" || rc=$?
 
   # 保持期間を過ぎた会話は再開できない。この失敗は課金ゼロで即座に返るので、
@@ -635,6 +679,11 @@ run_task_body() {
     fi
   fi
 
+  if [[ -s $question_file ]]; then
+    ask_user "$task_id" "$number" "$question_file" "$wt" "$branch" "$head_before" "$cost" "$pct_before" "$task_dir"
+    return $?
+  fi
+
   if [[ $(git -C "$wt" rev-parse HEAD) == "$head_before" ]]; then
     if [[ -n $(git -C "$wt" status --porcelain) ]]; then
       fail_task "$task_id" "コミットされていない変更が残っています"
@@ -647,7 +696,13 @@ run_task_body() {
     fi
 
     log "[$task_id] コード変更なし。結果のみコメントします"
-    set_labels "$number" "$( [[ -n $pending_plan ]] && printf '%s' "$LABEL_AWAITING" || printf '%s' "$LABEL_DONE" )"
+    if [[ -n $pending_plan ]]; then
+      task_phase awaiting-approval
+      set_labels "$number" "$LABEL_AWAITING"
+    else
+      task_phase answered
+      set_labels "$number" "$LABEL_DONE"
+    fi
     post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
     record_spend "$task_id" "$cost" "$pct_before" "" no-change
     remove_workspace "$task_dir"
@@ -663,29 +718,45 @@ run_task_body() {
     return 1
   fi
 
-  # 既存 PR があれば作り直さず、追加コミットをそのまま反映させる。draft は
-  # tools/push-branch が最初の push で作った仮の PR なので、本文を結果で書き換えて出す
-  local pr_url pr_out pr_created=0 pr_draft gate pr_body
+  # PR は検証を通るまで draft にしておき、通ったときだけ ready にしてレビューを依頼する。
+  # draft は tools/push-branch が最初の push で作った仮の PR なので、本文を結果で書き換える。
+  # 既に ready の PR（コメントからの追加コミット）は本文を変えず、検証を通らなければ draft に戻す
+  task_phase publish
+  local pr_url pr_out pr_created=0 pr_draft gate pr_body passed=0 ok=1
+  gate_passed "$log_dir" && passed=1
   gate=$(ci_gate_report "$log_dir")
   pr_body=$(printf 'Closes #%s\n\n%s\n\n%s---\n%s' "$number" "$result" "${gate:+$gate$'\n\n'}" "$COMMENT_MARKER")
   pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
   pr_draft=$(gh pr view "$branch" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null)
   if [[ -n $pr_url && $pr_draft == true ]]; then
-    if gh pr edit "$branch" -R "$REPO" --body "$pr_body" >/dev/null && gh pr ready "$branch" -R "$REPO" >/dev/null; then
+    if gh pr edit "$branch" -R "$REPO" --body "$pr_body" >/dev/null; then
       pr_created=1
-      request_review "$task_id" "$branch"
     else
-      warn "[$task_id] draft PR を出せませんでした: $pr_url"
+      warn "[$task_id] draft PR の本文を書き換えられませんでした: $pr_url"
     fi
-  elif [[ -z $pr_url ]]; then
-    if pr_out=$(gh pr create -R "$REPO" \
+    if (( passed )); then
+      if gh pr ready "$branch" -R "$REPO" >/dev/null; then
+        request_review "$task_id" "$branch"
+      else
+        warn "[$task_id] draft PR を出せませんでした: $pr_url"
+        ok=0
+      fi
+    fi
+  elif [[ -n $pr_url ]]; then
+    if (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
+      warn "[$task_id] 検証を通らなかった PR を draft に戻せませんでした: $pr_url"
+    fi
+  else
+    local -a draft_args=()
+    (( passed )) || draft_args=(--draft)
+    if pr_out=$(gh pr create -R "$REPO" "${draft_args[@]}" \
       --base "$BASE_BRANCH" --head "$branch" \
       --title "$title" \
       --body "$pr_body" 2>&1)
     then
       pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
       pr_created=1
-      request_review "$task_id" "$branch"
+      (( passed )) && request_review "$task_id" "$branch"
     else
       fail_task "$task_id" "PR の作成に失敗しました: $pr_out"
       set_labels "$number" "$LABEL_FAILED"
@@ -698,7 +769,16 @@ run_task_body() {
   # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
   LAST_TASK_OPENED_PR=1
 
-  set_labels "$number" "$LABEL_DONE"
+  local headline
+  if (( passed && ok )); then
+    task_phase review
+    set_labels "$number" "$LABEL_DONE"
+    headline=$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )
+  else
+    fail_task "$task_id" "検証を通らなかったため、PR を draft のまま止めました"
+    set_labels "$number" "$LABEL_FAILED"
+    headline='検証を通らなかったため、PR を draft のまま止めました（レビューは依頼していません）'
+  fi
   # 新規作成なら変更内容の説明は PR 本文（$result）に載る。既存 PR への追加
   # コミットでは PR 本文が書き換わらないため、返信に含めないと応答が消える
   local summary fallback=""
@@ -706,14 +786,41 @@ run_task_body() {
   local gate_block=""
   [[ -n $gate ]] && gate_block="$gate"$'\n\n'
   summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n%s推定コスト: $%s' \
-    "$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )" \
-    "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$gate_block" "$(printf '%.2f' "$cost")")
+    "$headline" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$gate_block" "$(printf '%.2f' "$cost")")
   post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" pr
-  remove_workspace "$task_dir"
-  log "[$task_id] 完了: $pr_url (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
+  if (( passed && ok )); then
+    record_spend "$task_id" "$cost" "$pct_before" "$pct_after" pr
+    remove_workspace "$task_dir"
+    log "[$task_id] 完了: $pr_url (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
+    return 0
+  fi
+  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" draft
+  log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+  return 1
+}
+
+# 実装の途中で聞いた場合のコミットは、回答を受けた次の実行が引き継げるよう push しておく
+ask_user() {
+  local task_id="$1" number="$2" question="$3" wt="$4" branch="$5" head_before="$6" cost="$7" pct_before="$8" task_dir="$9"
+  local keep=0
+  if [[ $(git -C "$wt" rev-parse HEAD) != "$head_before" ]] && ! push_workspace "$wt" "$branch"; then
+    warn "[$task_id] 質問の前のコミットを push できませんでした"
+    keep=1
+  fi
+  [[ -n $(git -C "$wt" status --porcelain) ]] && keep=1
+
+  log "[$task_id] ユーザーに質問し、回答を待ちます"
+  task_phase awaiting-input
+  set_labels "$number" "$LABEL_AWAITING_INPUT"
+  post_report "$(printf '%s\n\n---\n回答は、行頭に `%s` を付けてコメントしてください。' "$(<"$question")" "$TRIGGER_COMMAND")"
+  record_spend "$task_id" "$cost" "$pct_before" "" question
+  if (( keep )); then
+    log "[$task_id] push していない変更があるため、作業ディレクトリを残します: $task_dir"
+  else
+    remove_workspace "$task_dir"
+  fi
   return 0
 }

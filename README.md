@@ -44,11 +44,17 @@ Issue に `agent:queued` を付けて `./poll.sh` を実行する。ラベルは
 ```
 agent:queued ──▶ agent:running ──▶ agent:done
                        ├────────▶ agent:failed
+                       ├────────▶ agent:awaiting-input ──(/claude で回答)──▶ agent:running
                        └────────▶ agent:awaiting-approval ──(/claude approve)──▶ agent:done
 ```
 
 タスクが大きいとエージェントは実装せず分解案をコメントし、`agent:awaiting-approval` で止まる。
 `/claude approve` とコメントすると sub issue が作られる（詳細は `docs/task-flow.md`）。
+
+依頼が曖昧なときは、エージェントは実装せず質問をコメントし、`agent:awaiting-input` で止まる。
+`/claude` に続けて回答を書くと、同じ会話の続きとして作業が再開する。
+
+PR は CI とレビュアー（critic）の確認を通ったときだけ Open になり、レビューが依頼される。通らなかった PR は Draft のまま `agent:failed` で止まる。
 
 ### コメントでトリガーする
 

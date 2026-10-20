@@ -139,7 +139,7 @@ GitHub App を使わない構成では、`gh` の認証情報（`~/.config/gh`�
 
 - **タスクを受け付けるユーザー（`ALLOWED_ACTORS`）は必須**。空だと `poll.sh` は起動を拒否する。
   Issue / PR コメントは第三者が書けるため、発行者を絞らないとプロンプトインジェクション経由の任意コード実行に直結する。
-- システムプロンプトで、Issue 本文を「信頼できない入力」として扱わせている（`prompts/issue.md`）。
+- システムプロンプトで、Issue 本文を「信頼できない入力」として扱わせている（`prompts/agent.md`）。
 - GitHub App 利用時は、**bot 自身（`app/<slug>` と `<slug>[bot]`）が `ALLOWED_ACTORS` に自動で加わる**。
   タスク分解で作られた sub issue の author は bot になるため、これがないと自動キューが機能しない。
   bot 名義で Issue を作れるのは秘密鍵の持ち主だけなので、第三者の迂回路にはならない。

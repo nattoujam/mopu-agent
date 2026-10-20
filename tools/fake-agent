@@ -18,6 +18,8 @@ STRUCTURED="${FAKE_AGENT_STRUCTURED:-}"
 # エージェントは worktree 直下で起動される
 MARKER_FILE='mopu-agent-fake.md'
 PLAN_FILE='.mopu-agent-plan.json'
+QUESTION_FILE='.mopu-agent-question.md'
+GATE="${FAKE_AGENT_GATE:-passed}"
 
 PROMPT=""
 RESUME_ID=""
@@ -81,13 +83,25 @@ write_plan() {
     > "$PLAN_FILE"
 }
 
+# Stop hook の ci-gate は本物の Claude Code からしか呼ばれないので、その判定を代わりに書く
+write_gate() {
+  [[ -n ${MOPU_LOG_DIR:-} ]] || return 0
+  jq -nc --arg v "$GATE" '{verdict: $v, detail: "fake-agent", critic_verdict: "approve", critic_reasons: []}' \
+    > "$MOPU_LOG_DIR/ci-gate.json"
+}
+
 case "$MODE" in
   commit)
     if ! { write_marker && git_commit; }; then
       emit_result "コミットに失敗しました（worktree がありません）" true
       exit 1
     fi
+    write_gate
     emit_result "$MARKER_FILE を更新してコミットしました。"
+    ;;
+  question)
+    printf '## 確かめたいこと\n\nfake-agent が FAKE_AGENT_MODE=question で書いた質問です。\n' > "$QUESTION_FILE"
+    emit_result "ユーザーに質問しました。"
     ;;
   noop)
     emit_result "調査した結果、変更は不要でした。"
