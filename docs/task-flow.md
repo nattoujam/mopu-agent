@@ -240,7 +240,7 @@ clone の失敗や App の未インストールなど、1 つのリポジトリ�
   塞ぐとレビュー指摘を反映できず、「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる。
   PR へのコメントは、ブランチ名 `agent/issue-<番号>` から元 Issue の番号に読み替える。
   読み替えるのは作業対象の番号だけで、報告はコメントが来た PR 側に返る
-- `agent:awaiting-input` の Issue への `/claude` コメントも例外として処理される
+- `agent:awaiting-input` と `agent:awaiting-approval` の Issue への `/claude` コメントも例外として処理される
 - `--task` での手動指定もゲートを通さない
 - `0` にすると無制限になる
 

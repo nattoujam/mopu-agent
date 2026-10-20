@@ -172,7 +172,7 @@ mark_task_seen() {
 
 # 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
 # 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる。
-# 質問への回答を待っている Issue へのコメントも、着手済みのタスクの続きなので通す
+# 質問への回答や分解案の承認を待っている Issue へのコメントも、着手済みのタスクの続きなので通す
 in_flight_blocked() {
   local number="$1" kind="${2:-}" b
   (( MAX_OPEN_AGENT_PRS > 0 )) || return 1
@@ -181,7 +181,8 @@ in_flight_blocked() {
   done
   (( OPEN_AGENT_PRS >= MAX_OPEN_AGENT_PRS )) || return 1
   [[ $kind == comment ]] || return 0
-  ! gh issue view "$number" -R "$REPO" --json labels --jq '.labels[].name' 2>/dev/null | grep -qxF -- "$LABEL_AWAITING_INPUT"
+  ! gh issue view "$number" -R "$REPO" --json labels --jq '.labels[].name' 2>/dev/null \
+    | grep -qxF -e "$LABEL_AWAITING_INPUT" -e "$LABEL_AWAITING"
 }
 
 # --- タスクの収集 ---
