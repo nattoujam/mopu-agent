@@ -21,8 +21,7 @@
     "network": {
       "allowedDomains": [
         "registry.npmjs.org",
-        "api.github.com",
-        "*.blob.core.windows.net"
+        "api.github.com"
       ],
       "strictAllowlist": true
     },

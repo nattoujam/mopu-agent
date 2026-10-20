@@ -27,7 +27,7 @@ Repository permissions は次のものだけ与える。
 | Contents | Read and write | ブランチの push |
 | Issues | Read and write | コメント投稿、ラベル操作 |
 | Pull requests | Read and write | PR の作成、レビュアーの指定 |
-| Actions | Read-only。`DISPATCH_WORKFLOWS` を使うなら Read and write | エージェントが CI の結果と artifact を読む、ワークフローを起動する（[CI で検証する](isolation.md#ci-で検証する)） |
+| Actions | Read-only | エージェントが CI の結果を読む（[CI で検証する](isolation.md#ci-で検証する)） |
 | Metadata | Read-only | 必須（自動で付く） |
 
 ## コンソールで登録する

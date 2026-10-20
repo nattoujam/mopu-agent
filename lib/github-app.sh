@@ -62,7 +62,7 @@ app_token_with() {
     --input <(printf '{"permissions":%s}' "$perms") --jq '.token' 2>/dev/null
 }
 
-# エージェントの gh に渡すトークン。CI の結果と artifact を読めれば足りるので
+# エージェントの gh に渡すトークン。CI の結果を読めれば足りるので
 # actions:read に絞る。write を渡すと workflow_dispatch でデプロイ系の
 # ワークフローまで起動できてしまう
 AGENT_TOKEN_PERMISSIONS='{"actions":"read","contents":"read","metadata":"read"}'

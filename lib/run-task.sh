@@ -276,7 +276,7 @@ build_agent_settings() {
   jq --arg wt "$wt" --arg repo_git "$REPO_DIR/.git" --arg admin "$admin" \
      --argjson secrets "$secrets_json" --arg tools "$tools" \
     'def abs: sub("^/"; "//");
-     ["\($tools)/push-branch", "\($tools)/dispatch-workflow *", "\($tools)/run-container *"] as $host_cmds
+     ["\($tools)/push-branch", "\($tools)/run-container *"] as $host_cmds
      | .permissions.allow = (
         ["Read(\($wt | abs)/**)", "Edit(\($wt | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
@@ -473,11 +473,6 @@ run_task_body() {
   fi
   sys_prompt+=$'\n\n'"$(sed -e "s|%%PUSH_CMD%%|$AGENT_DIR/tools/push-branch|g" \
     -e "s|%%BRANCH%%|$branch|g" "$AGENT_DIR/prompts/ci.md")"
-  if (( ${#DISPATCH_WORKFLOWS[@]} )); then
-    sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）は \`$AGENT_DIR/tools/dispatch-workflow <workflow.yml> [key=value ...]\` で行う。ブランチは自分のものに固定され、起動できるのは次だけ: $(printf '`%s` ' "${DISPATCH_WORKFLOWS[@]}")。先に push しておくこと。他のコマンドと繋がず単独で呼ぶ"
-  else
-    sys_prompt+=$'\n'"- 手動起動（\`workflow_dispatch\`）はできない。push で起動するワークフローだけが使える"
-  fi
   # SETUP_CMD は & や | を含みうるので、sed の置換ではなく直接埋め込む
   [[ -n $SETUP_CMD ]] && sys_prompt+=$'\n\n'"### 依存の準備
 

@@ -18,7 +18,6 @@ declare -A default_labels=(
 
 (
   unset REPO
-  DISPATCH_WORKFLOWS=()
   # shellcheck disable=SC1090
   source "$cfg"
   [[ -n ${REPO:-} ]] || die "config.env に REPO がありません"
@@ -53,7 +52,6 @@ declare -A default_labels=(
     --arg allowed_actors "$(opt ALLOWED_ACTORS)" \
     --arg base_branch "$(opt BASE_BRANCH)" \
     --arg max_open_agent_prs "$(opt MAX_OPEN_AGENT_PRS)" \
-    --argjson dispatch_workflows "$(printf '%s\n' "${DISPATCH_WORKFLOWS[@]}" | jq -R 'select(. != "")' | jq -sc .)" \
     --arg setup_cmd "$(opt SETUP_CMD)" \
     --arg setup_timeout "$(opt SETUP_TIMEOUT)" \
     --argjson scheduler "$scheduler" \
@@ -75,7 +73,6 @@ declare -A default_labels=(
            allowed_actors: ($allowed_actors | split(" ") | map(select(. != ""))),
            base_branch: ($base_branch | s),
            max_open_agent_prs: ($max_open_agent_prs | n),
-           dispatch_workflows: $dispatch_workflows,
            setup_cmd: $setup_cmd,
            setup_timeout: ($setup_timeout | s)
          }

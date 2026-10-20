@@ -47,11 +47,6 @@
       "env": "MAX_OPEN_AGENT_PRS", "type": "integer", "default": 1, "min": 0, "max": 50,
       "label": "同時に進行させる PR の上限", "help": "0 で無制限。進行中 PR の元 Issue へのコメントは常に処理する"
     },
-    "dispatch_workflows": {
-      "env": "DISPATCH_WORKFLOWS", "type": "list", "shell": "array", "default": [],
-      "item_pattern": "^[A-Za-z0-9._-]+\\.ya?ml$",
-      "label": "エージェントが起動してよいワークフロー", "help": "workflow_dispatch で起動を許すファイル名。デプロイ系は入れないこと"
-    },
     "container_checks": {
       "env": "CONTAINER_CHECKS", "type": "records", "key": "name", "key_from": "container_check", "default": [],
       "key_conflict": "イメージ（タグを除く）とコマンドが同じ検証がほかの行にあります",

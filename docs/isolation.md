@@ -96,17 +96,13 @@ Bash ツールの timeout は最大 10 分なので、それより長い検証�
 
 ## CI で検証する
 
-登録していない検証は、エージェントがブランチを push して CI に任せ、結果と artifact を `gh` で読む。
+登録していない検証は、エージェントがブランチを push して CI に任せ、結果を `gh` で読む。
 
 - push は `tools/push-branch` が sandbox の外で動く。`excludedCommands` は compound command の
   一部が一致すると全体を sandbox の外で走らせるため、`&&` で繋いだ呼び出しや `$(...)` を含む
   引数は PreToolUse フック（`tools/guard-host-commands`）で弾く。allow ルールだけでは防げない
 - `gh` には App の installation token を読み取り権限に絞って渡す。`actions:write` を渡すと
   リポジトリ内の dispatch 可能なワークフロー全部（デプロイ系を含む）を起動できてしまうため
-- `workflow_dispatch` は `tools/dispatch-workflow` 経由で、`DISPATCH_WORKFLOWS` に列挙した
-  ワークフローだけ起動できる。デプロイ系は列挙しないこと
-- `*.blob.core.windows.net` は artifact のダウンロード先。`gh run download` は
-  `api.github.com` からそこへリダイレクトされる
 
 ### CI を通るまで終えさせない
 
@@ -120,8 +116,7 @@ HEAD のコミットの CI 結果を確かめ、push していない・実行中
 - テストのファイル、テストの設定、`package.json` の scripts を変えたときは、PR 本文に一覧で出る
 - CI を通った（または CI 対象外の）変更は、終える前に別の `claude -p`（critic）が確かめる。依頼の完了条件、対象リポジトリの指示、テストを弱めていないか、変更前後の基準画像（`.png`）を見て、問題があれば理由を返して直させる。差し戻しは 2 回までで、3 回目は指摘を PR 本文に載せて終える。critic はツールを持たず、`sonnet` で動き、そのコストはタスクのコストに足される。タスクの予算の上限（`MAX_TASK_BUDGET_USD`）には含まれない
 
-**App に `Actions` の権限が要る**。結果を読むだけなら Read、`DISPATCH_WORKFLOWS` を使うなら
-Read and write。付いていないとエージェント用トークンの発行が 422 で失敗し、そのタスクでは
+**App に `Actions` の Read 権限が要る**。付いていないとエージェント用トークンの発行が 422 で失敗し、そのタスクでは
 `gh` が使えない（push はできる）。App 設定の Permissions で追加し、インストール側で承認する。
 
 GitHub App を使わない構成では、`gh` の認証情報（`~/.config/gh`）が sandbox から読めないため
@@ -129,10 +124,10 @@ GitHub App を使わない構成では、`gh` の認証情報（`~/.config/gh`�
 
 ## できないこと
 
-- `don't ask mode` で拒否される書き方がある。`&` でのバックグラウンド実行、`VAR=x cmd` の
-  環境変数の前置、作業ディレクトリの外への `cd` は Claude Code が prompt に回すため、
-  sandbox の自動承認を通らない。ログでこの拒否を見ても sandbox の不具合ではない。
-  プロンプトではスクリプトに書いて `bash ./script.sh` で実行するよう伝えている
+- ログに `don't ask mode` による拒否が出ることがある。Claude Code が承認の prompt に回す書き方を
+  エージェントが使ったもので、sandbox の不具合ではない。どの書き方が当たるかは
+  [Configure permissions](https://code.claude.com/docs/en/permissions) にある。エージェントは、
+  そうした手順をスクリプトに書いて `bash ./script.sh` で実行する
 
 ## 依存の準備
 
