@@ -141,13 +141,15 @@ load_leftover_task() {
 # タスクの会話 ID を Issue 番号ごとに控える。--retry の再開と、PR コメントへの
 # 対応で前回の会話を引き継ぐために使う。作業ツリーと違って成功時にも消さないので、
 # レビューが数日後に来ても、その PR を書いたときの判断から続けられる
+# cost_usd は会話の累計の total_cost_usd。再開した実行の total_cost_usd は再開元の
+# 会話の分も含むため、そのタスクの費用を出すときに差し引く
 record_session() {
-  local number="$1" sid="$2" tmp
+  local number="$1" sid="$2" cost="${3:-0}" tmp
   [[ -n $sid && $sid != null ]] || return 0
   [[ -f $SESSION_FILE ]] || echo '{}' > "$SESSION_FILE"
   tmp="$SESSION_FILE.tmp"
-  if jq --arg n "$number" --arg s "$sid" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.[$n] = {session_id: $s, updated: $t}' "$SESSION_FILE" > "$tmp" 2>/dev/null
+  if jq --arg n "$number" --arg s "$sid" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson c "${cost:-0}" \
+      '.[$n] = {session_id: $s, updated: $t, cost_usd: $c}' "$SESSION_FILE" > "$tmp" 2>/dev/null
   then
     mv "$tmp" "$SESSION_FILE"
   else
@@ -171,6 +173,13 @@ session_of_issue() {
   [[ -f $SESSION_FILE ]] || return 0
   jq -r --arg n "$1" '.[$n].session_id // empty' "$SESSION_FILE" 2>/dev/null
 }
+
+session_cost_of_issue() {
+  [[ -f $SESSION_FILE ]] || { echo 0; return 0; }
+  jq -r --arg n "$1" '.[$n].cost_usd // 0' "$SESSION_FILE" 2>/dev/null || echo 0
+}
+
+RESUME_FILE_NAME='resume.json'
 
 # --retry で渡す前回の失敗の情報。何が起きて、何がやりかけで残っているか
 build_retry_context() {
@@ -536,10 +545,14 @@ run_task_body() {
 
   # 前回の会話を引き継ぐ条件。--retry は中断したタスクの再開、コメントは自分が
   # 出した PR へのレビュー対応で、どちらも前回の続きになる
-  local resume_id=""
+  local resume_id="" resume_file="$log_dir/$RESUME_FILE_NAME"
   if (( ${RETRY:-0} )) || [[ $kind == comment ]]; then
     resume_id=$(session_of_issue "$number")
-    [[ -n $resume_id ]] && log "[$task_id] 前回の会話を再開します: $resume_id"
+    if [[ -n $resume_id ]]; then
+      log "[$task_id] 前回の会話を再開します: $resume_id"
+      jq -nc --arg s "$resume_id" --argjson c "$(session_cost_of_issue "$number")" \
+        '{session_id: $s, base_cost_usd: $c}' > "$resume_file"
+    fi
   fi
 
   local rc=0
@@ -554,14 +567,17 @@ run_task_body() {
     warn "[$task_id] 会話 $resume_id が見つかりません。新しい会話で実行します"
     forget_session "$number"
     resume_id=""
+    rm -f "$resume_file"
     rc=0
     invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "" || rc=$?
   fi
 
-  local result is_error cost
+  local result is_error session_cost cost
   result=$(last_result "$log_dir/stream.jsonl")
   is_error=$(jq -r 'select(.type=="result") | .is_error' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
-  cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  session_cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  cost=$(jq -rn --argjson c "${session_cost:-0}" --argjson b "$(jq '.base_cost_usd // 0' "$resume_file" 2>/dev/null || echo 0)" \
+    '[$c - $b, 0] | max')
   # critic は別の claude -p なので、エージェントの total_cost_usd にも --max-budget-usd にも入らない
   [[ -s $log_dir/ci-gate.json ]] \
     && cost=$(jq -r --argjson c "${cost:-0}" '$c + (.critic_cost_usd // 0)' "$log_dir/ci-gate.json")
@@ -576,7 +592,7 @@ run_task_body() {
     warn "[$task_id] 打ち切りで終わったため、この会話は引き継ぎません (${subtype:-timeout})"
     forget_session "$number"
   else
-    record_session "$number" "$session_id"
+    record_session "$number" "$session_id" "$session_cost"
   fi
 
   # 枠の非常ブレーキ。allowed_warning / rejected を検知したら呼び出し元に伝える

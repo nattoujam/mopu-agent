@@ -584,6 +584,17 @@ def file_key(path):
         return None
 
 
+# 会話を再開した実行の total_cost_usd は、再開元の会話の分も含むため差し引く
+def own_cost(path, total):
+    if total is None:
+        return None
+    try:
+        base = json.loads((path / "resume.json").read_text()).get("base_cost_usd") or 0
+    except (OSError, ValueError):
+        base = 0
+    return max(float(total) - float(base), 0.0)
+
+
 def task_summary(path):
     stream = path / "stream.jsonl"
     outcome_file = path / "outcome.json"
@@ -611,7 +622,7 @@ def task_summary(path):
             continue
         summary["state"] = "error" if obj.get("is_error") else "success"
         summary["subtype"] = obj.get("subtype")
-        summary["cost_usd"] = obj.get("total_cost_usd")
+        summary["cost_usd"] = own_cost(path, obj.get("total_cost_usd"))
         summary["duration_ms"] = obj.get("duration_ms")
         summary["turns"] = obj.get("num_turns")
         summary["result"] = (obj.get("result") or "")[:400]
