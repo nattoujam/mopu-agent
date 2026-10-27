@@ -26,7 +26,11 @@ case $(jq -r '.tool_name // ""' <<<"$input") in
   *) exit 0 ;;
 esac
 
-detail=""
-[[ $phase == verify ]] && detail="検証の指摘を直す"
-record_phase "$file" implement "$detail"
+detail="" note=""
+if [[ $phase == verify ]]; then
+  detail="検証の指摘を直す"
+elif [[ -s ${MOPU_TASK_DIR:-}/$REPO_SUBDIR/$NOTE_FILE_NAME ]]; then
+  note=$(md_quote "$(<"$MOPU_TASK_DIR/$REPO_SUBDIR/$NOTE_FILE_NAME")")
+fi
+record_phase "$file" implement "$detail" "$note"
 exit 0

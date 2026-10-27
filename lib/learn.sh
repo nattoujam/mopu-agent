@@ -147,10 +147,11 @@ publish_learn_issues() {
   done
 }
 
-# run_learn_task_body の local の task_id / kind / number / cost / pct_before / task_dir を読むため、その中からしか呼べない。
+# run_learn_task_body の local の task_id / kind / number / title / cost / pct_before / task_dir を読むため、その中からしか呼べない。
 # 学習の失敗は数え、上限まで次のポーリングでやり直す。棚卸しは指示の中身が変わるまで出し直さない
 learn_failed() {
   fail_task "$task_id" "$1"
+  notify "❌ **失敗** $(issue_ref "$REPO") $title"$'\n'"\`$task_id\`"$'\n'"$(md_quote "$1")"
   [[ $kind == learn ]] && mark_learned "$number" failed
   [[ $kind == tidy ]] && learn_memory_hash > "$(learn_tidy_file)"
   record_spend "$task_id" "${cost:-0}" "$pct_before" "" failed
@@ -295,5 +296,6 @@ run_learn_task_body() {
   record_spend "$task_id" "$cost" "$pct_before" "$pct_after" issue
   remove_workspace "$task_dir"
   log "[$task_id] 完了: $LEARN_ISSUE_URLS (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
+  notify "📚 **学習の案** $(issue_ref "$REPO") $title"$'\n'"- ${LEARN_ISSUE_URLS// /$'\n'- }"
   return 0
 }

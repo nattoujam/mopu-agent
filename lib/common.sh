@@ -29,6 +29,8 @@ AGENT_LABELS=("$LABEL_QUEUED" "$LABEL_RUNNING" "$LABEL_AWAITING" "$LABEL_AWAITIN
 SETTINGS_FILE="$AGENT_DIR/state/settings.json"
 SETTINGS_SCHEMA="$AGENT_DIR/settings/schema.json"
 APP_KEY_FILE="$AGENT_DIR/state/secrets/github-app.pem"
+NOTIFY_FILE="$AGENT_DIR/state/secrets/nextcloud.json"
+NOTIFY_STATE_FILE="$AGENT_DIR/state/notify-state.json"
 
 log()  { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
@@ -37,13 +39,79 @@ die()  { err "$*"; exit 1; }
 
 # shellcheck disable=SC2034  # run-task.sh / ci-gate / track-phase で参照
 PHASE_FILE_NAME='phases.jsonl'
+TASK_FILE_NAME='task.json'
+# shellcheck disable=SC2034  # run-task.sh / workspace.sh / track-phase で参照
+NOTE_FILE_NAME='.mopu-agent-note.md'
+
+notify() {
+  [[ -f $NOTIFY_FILE ]] || return 0
+  local out
+  out=$(node "$AGENT_DIR/lib/notify.ts" "$NOTIFY_FILE" "$@" 2>&1) \
+    || warn "Nextcloud Talk に通知できませんでした: $out"
+}
+
+notify_on_change() {
+  local key="$1" value="$2" prev
+  shift 2
+  prev=$(jq -r --arg k "$key" '.[$k] // ""' "$NOTIFY_STATE_FILE" 2>/dev/null)
+  [[ $prev == "$value" ]] && return 0
+  jq -n --arg k "$key" --arg v "$value" --slurpfile s <(cat "$NOTIFY_STATE_FILE" 2>/dev/null) \
+    '($s[0] // {}) + {($k): $v}' 2>/dev/null > "$NOTIFY_STATE_FILE.tmp" \
+    && mv "$NOTIFY_STATE_FILE.tmp" "$NOTIFY_STATE_FILE"
+  notify "$@"
+}
+
+issue_ref() { printf '%s%s' "${1#*/}" "${2:+#$2}"; }
+
+md_quote() { printf '> %s' "${1//$'\n'/$'\n'> }"; }
+
+task_issue() {
+  local slug="${1%/*}" task_id="${1##*/}"
+  [[ $task_id =~ ^(issue|comment)-([0-9]+)- ]] || return 1
+  slug="${slug##*/}"
+  printf '%s %s\n' "${slug%%__*}/${slug#*__}" "${BASH_REMATCH[2]}"
+}
+
+notify_task() {
+  local repo number
+  read -r repo number < <(task_issue "$1") || return 0
+  notify --silent "$(issue_ref "$repo" "$number") $2"
+}
+
+notify_phase() {
+  local dir="${1%/*}" phase="$2" detail="$3" body="$4"
+  local task_id="${dir##*/}" repo number ref title issue_link text silent=""
+  read -r repo number < <(task_issue "$dir") || return 0
+  ref=$(issue_ref "$repo" "$number")
+  title=$(jq -r '.title // empty' "$dir/$TASK_FILE_NAME" 2>/dev/null)
+  issue_link="[Issue #$number](https://github.com/$repo/issues/$number)"
+  case $phase in
+    prepare) silent=--silent; text="▶ $ref $title"$'\n'"\`$task_id\`" ;;
+    implement)
+      silent=--silent
+      if [[ -n $detail ]]; then text="$ref ↩ 実装に戻りました: $detail"; else text="$ref → 実装"; fi ;;
+    verify) silent=--silent; text="$ref → 検証（$detail）" ;;
+    publish) silent=--silent; text="$ref → 公開${detail:+（$detail）}" ;;
+    review)
+      local link="$issue_link"
+      [[ $detail =~ ^PR\ \#([0-9]+)$ ]] && link="[PR #${BASH_REMATCH[1]}](https://github.com/$repo/pull/${BASH_REMATCH[1]})"
+      text="✅ **レビュー待ち** $ref $title"$'\n'"$link" ;;
+    answered) text="💬 **回答済み** $ref $title"$'\n'"$issue_link" ;;
+    awaiting-input) text="❓ **回答待ち** $ref $title"$'\n'"$issue_link" ;;
+    awaiting-approval) text="📝 **承認待ち** $ref $title"$'\n'"${detail:+$detail · }$issue_link" ;;
+    failed) text="❌ **失敗** $ref $title"$'\n'"\`$task_id\`"$'\n'"$(md_quote "$detail")" ;;
+    *) return 0 ;;
+  esac
+  notify $silent "$text${body:+$'\n'$body}"
+}
 
 # タスクのフェーズの移り変わりを 1 行ずつ足す。最後の行が今のフェーズ
 record_phase() {
-  local file="$1" phase="$2" detail="${3:-}"
+  local file="$1" phase="$2" detail="${3:-}" body="${4:-}"
   [[ -n $file && -d ${file%/*} ]] || return 0
   jq -nc --arg p "$phase" --arg d "$detail" --arg t "$(date -Is)" \
     '{phase: $p, at: $t} + (if $d == "" then {} else {detail: $d} end)' >> "$file"
+  notify_phase "$file" "$phase" "$detail" "$body"
 }
 
 current_phase() {

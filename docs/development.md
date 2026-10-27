@@ -65,6 +65,7 @@ lib/plan.sh             タスク分解の提案と承認（sub issue 作成）
 lib/run-task.sh         claude -p の実行 → push → PR → コメント
 lib/learn.sh            差し戻しのあった PR から基準の案を作らせ、Issue として出す。棚卸しも行う
 lib/project-memory.sh   対象リポジトリの CLAUDE.md と rules をベースブランチから読み、プロンプトにする
+lib/notify.ts           Nextcloud Talk の bot API に署名して送る。文面は common.sh などの呼び出し側が作る
 tools/fake-agent        claude の代役スタブ（動作検証用）
 tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）

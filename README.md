@@ -109,7 +109,7 @@ PR で指示した場合も、ブランチ・ラベル・sub issue は元 Issue 
 | ドキュメント | 内容 |
 |---|---|
 | [GitHub App として投稿する](docs/github-app.md) | bot 名義で投稿するための設定（任意） |
-| [Web コンソール](docs/console.md) | 定期実行とログ閲覧の画面 |
+| [Web コンソール](docs/console.md) | 定期実行・設定・ログ閲覧の画面と、Nextcloud Talk への通知 |
 | [タスクの制御](docs/task-flow.md) | 作成される PR、タスク分解、同時進行の制限、利用枠のゲート |
 | [実行環境と権限](docs/isolation.md) | エージェントに与えている権限と、その境界 |
 | [開発](docs/development.md) | 動作検証の方法とファイル構成 |

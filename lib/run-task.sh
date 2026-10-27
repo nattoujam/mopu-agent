@@ -115,8 +115,6 @@ find_leftover_task() {
     | sort | tail -1
 }
 
-TASK_FILE_NAME='task.json'
-
 # --retry で前回のタスクをそのまま再現するための控え。Issue 本文から組み直すと
 # コメント由来のタスクでは指示だったコメント本文が失われる。作業ツリーではなく
 # ログ側に置くのは、エージェントの cwd から見えない場所に保つため
@@ -268,7 +266,7 @@ build_system_prompt() {
     [[ $kind == comment ]] && printf '\n' && cat "$p/command.md"
 
     printf '\n'
-    sed "s|%%QUESTION_FILE%%|$wt/$QUESTION_FILE_NAME|g" "$p/triage.md"
+    sed -e "s|%%QUESTION_FILE%%|$wt/$QUESTION_FILE_NAME|g" -e "s|%%NOTE_FILE%%|$wt/$NOTE_FILE_NAME|g" "$p/triage.md"
     printf '\n'
     if [[ -n $decompose_off ]]; then
       text=$(<"$p/decompose-off.md")
@@ -427,6 +425,11 @@ task_phase() {
   record_phase "$TASK_PHASE_FILE" "$@"
 }
 
+lead_quote() {
+  [[ -n $1 ]] || return 0
+  md_quote "${1%%$'\n\n'*}"
+}
+
 record_outcome() {
   [[ -n $TASK_OUTCOME_FILE ]] || return 0
   jq -nc --argjson ok "$1" --arg reason "${2:-}" \
@@ -484,16 +487,16 @@ run_task_body() {
   local plan_file="$wt/$PLAN_FILE_NAME"
   local replies_file="$wt/$REPLIES_FILE_NAME"
   local question_file="$wt/$QUESTION_FILE_NAME"
-  # --retry で引き継いだ作業ツリーには前回の返信と質問が残っている
-  rm -f "$replies_file" "$question_file"
+  # --retry で引き継いだ作業ツリーには前回の返信と質問と方針が残っている
+  rm -f "$replies_file" "$question_file" "$wt/$NOTE_FILE_NAME"
   local log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
   TASK_OUTCOME_FILE="$log_dir/outcome.json"
   TASK_PHASE_FILE="$log_dir/$PHASE_FILE_NAME"
-  task_phase prepare
   [[ -n ${CURRENT_TASK_JSON:-} ]] \
     && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \
       > "$log_dir/$TASK_FILE_NAME"
+  task_phase prepare
 
   # --ignore-budget ではゲートを通らず USAGE_5H が空になるため取り直す
   local pct_before="$USAGE_5H"
@@ -700,7 +703,7 @@ run_task_body() {
       task_phase awaiting-approval
       set_labels "$number" "$LABEL_AWAITING"
     else
-      task_phase answered
+      task_phase answered "" "$(lead_quote "$result")"
       set_labels "$number" "$LABEL_DONE"
     fi
     post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
@@ -721,7 +724,9 @@ run_task_body() {
   # PR は検証を通るまで draft にしておき、通ったときだけ ready にしてレビューを依頼する。
   # draft は tools/push-branch が最初の push で作った仮の PR なので、本文を結果で書き換える。
   # 既に ready の PR（コメントからの追加コミット）は本文を変えず、検証を通らなければ draft に戻す
-  task_phase publish
+  local reviewed=""
+  [[ $(jq -r '.critic_verdict // empty' "$log_dir/ci-gate.json" 2>/dev/null) == approve ]] && reviewed="レビュアー承認"
+  task_phase publish "$reviewed"
   local pr_url pr_out pr_created=0 pr_draft gate pr_body passed=0 ok=1
   gate_passed "$log_dir" && passed=1
   gate=$(ci_gate_report "$log_dir")
@@ -769,9 +774,10 @@ run_task_body() {
   # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
   LAST_TASK_OPENED_PR=1
 
-  local headline
+  local headline brief
   if (( passed && ok )); then
-    task_phase review
+    brief=$(lead_quote "$result")
+    task_phase review "PR #${pr_url##*/}" "推定 \$$(printf '%.2f' "$cost")${brief:+$'\n'$brief}"
     set_labels "$number" "$LABEL_DONE"
     headline=$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )
   else
@@ -813,7 +819,7 @@ ask_user() {
   [[ -n $(git -C "$wt" status --porcelain) ]] && keep=1
 
   log "[$task_id] ユーザーに質問し、回答を待ちます"
-  task_phase awaiting-input
+  task_phase awaiting-input "" "$(lead_quote "$(<"$question")")"
   set_labels "$number" "$LABEL_AWAITING_INPUT"
   post_report "$(printf '%s\n\n---\n回答は、行頭に `%s` を付けてコメントしてください。' "$(<"$question")" "$TRIGGER_COMMAND")"
   record_spend "$task_id" "$cost" "$pct_before" "" question

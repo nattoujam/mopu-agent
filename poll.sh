@@ -4,6 +4,14 @@ set -uo pipefail
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$AGENT_DIR/lib/common.sh"
 
+POLL_ERROR_KEY="poll"
+POLL_LABEL=""
+die() {
+  err "$*"
+  notify_on_change "$POLL_ERROR_KEY" "$*" "⚠ **ポーリングを中止**${POLL_LABEL}"$'\n'"$(md_quote "$*")"
+  exit 1
+}
+
 DRY_RUN=0
 IGNORE_BUDGET=0
 ONLY_TASK=""
@@ -43,6 +51,10 @@ while (( $# )); do
   esac
   shift
 done
+if [[ -n $ONLY_REPO ]]; then
+  POLL_ERROR_KEY="poll:$ONLY_REPO"
+  POLL_LABEL=" $(issue_ref "$ONLY_REPO")"
+fi
 
 require_tools
 
@@ -90,6 +102,7 @@ poll_all_repos() {
   done
   rm -f "$report"
   log "全リポジトリの処理を終えました（計 $total 件）"
+  notify_on_change "$POLL_ERROR_KEY" "" --silent "✅ ポーリングが復旧しました"
   (( DRY_RUN )) || "$AGENT_DIR/tools/loop-metrics" >/dev/null || warn "ループの計測に失敗しました"
   return "$failed"
 }
@@ -110,7 +123,12 @@ write_report() {
   [[ -n $REPORT_FILE ]] || return 0
   jq -nc --argjson p "$processed" --argjson s "$STOP_ALL" '{processed: $p, stop: ($s == 1)}' > "$REPORT_FILE"
 }
-trap write_report EXIT
+finish_repo() {
+  local rc=$?
+  write_report
+  (( rc == 0 )) && notify_on_change "$POLL_ERROR_KEY" "" --silent "✅ ポーリングが復旧しました${POLL_LABEL}"
+}
+trap finish_repo EXIT
 
 source "$AGENT_DIR/lib/github-app.sh"
 source "$AGENT_DIR/lib/budget.sh"
@@ -149,7 +167,15 @@ OPEN_AGENT_PRS=${#OPEN_AGENT_BRANCHES[@]}
 
 gate() {
   (( IGNORE_BUDGET )) && { log "利用枠のゲートを無視します (--ignore-budget)"; return 0; }
-  check_budget
+  local rc=0
+  check_budget || rc=$?
+  (( DRY_RUN )) && return "$rc"
+  case $rc in
+    0) notify_on_change budget "" --silent "▶ 利用枠が戻ったため、タスクの処理を再開します" ;;
+    1) notify_on_change budget over "⏸ **利用枠の上限で停止中**"$'\n'"- 5h: ${USAGE_5H}%（resets ${USAGE_5H_RESET:-不明}）"$'\n'"- 7d: ${USAGE_7D}%（resets ${USAGE_7D_RESET:-不明}）" ;;
+    *) notify_on_change budget unknown "⏸ **利用枠を取得できないため停止中**" ;;
+  esac
+  return "$rc"
 }
 
 # 同じ親を持つ sub-issue は、先に作られたものが後続の前提になる。番号が若い
@@ -315,7 +341,10 @@ while IFS= read -r t <&3; do
   mark_task_seen "$t"
   (( processed++ ))
 done 3<<<"$tasks"
-(( RATE_LIMIT_HIT )) && STOP_ALL=1
+if (( RATE_LIMIT_HIT )); then
+  STOP_ALL=1
+  notify_on_change budget rate-limit "⏸ **レート上限の警告で停止中**"
+fi
 
 if (( INCOMPLETE_RUN )); then
   log "未処理のタスクが残っているため last-poll は更新しません（次回も同じ範囲を再走査します）"

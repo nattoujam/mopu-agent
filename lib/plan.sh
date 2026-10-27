@@ -90,7 +90,7 @@ propose_plan() {
   fi
 
   log "[$task_id] 分解案を提案します ($(jq '.sub_issues | length' "$plan") 件)"
-  task_phase awaiting-approval
+  task_phase awaiting-approval "分解案 $(jq '.sub_issues | length' "$plan") 件"
   set_labels "$number" "$LABEL_AWAITING"
   post_report "$(render_plan_comment "$plan")"
 
@@ -168,6 +168,7 @@ approve_plan_task() {
   plan_from_comment "$comment" > "$plan"
   if ! validate_plan "$plan"; then
     err "#$number の分解案を解釈できません"
+    notify "❌ **失敗** $(issue_ref "$REPO" "$number")"$'\n'"$(md_quote "分解案の plan.json を解釈できませんでした")"
     set_labels "$number" "$LABEL_FAILED"
     post_report "分解案の plan.json を解釈できませんでした。コメントを編集した場合は JSON として正しいか確認してください。"
     rm -f "$plan"
@@ -179,6 +180,7 @@ approve_plan_task() {
   rm -f "$plan"
   if [[ -z $created ]]; then
     err "#$number の sub issue を 1 件も作成できませんでした"
+    notify "❌ **失敗** $(issue_ref "$REPO" "$number")"$'\n'"$(md_quote "分解案は承認されましたが、sub issue を作成できませんでした")"
     set_labels "$number" "$LABEL_FAILED"
     post_report "分解案は承認されましたが、sub issue の作成に失敗しました。"
     return 0
@@ -195,6 +197,7 @@ approve_plan_task() {
     printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装され、すべて閉じたらこの Issue も自動で閉じます。\n' "$LABEL_QUEUED"
   )"
   log "#$number 分解完了: $(wc -l <<<"$created") 件の sub issue を作成しました"
+  notify --silent "🧩 $(issue_ref "$REPO" "$number") sub issue を $(wc -l <<<"$created") 件作成しました"$'\n'"$created"
   return 0
 }
 
@@ -227,6 +230,7 @@ close_completed_parents() {
     if post_comment "$number" "sub issue ($subs) がすべて閉じたので、この Issue を閉じます。"       && gh issue close "$number" -R "$REPO" --reason completed >/dev/null 2>&1
     then
       log "sub issue ($subs) がすべて閉じたため閉じました: #$number $title"
+      notify --silent "🏁 $(issue_ref "$REPO" "$number") $title"$'\n'"sub issue（$subs）がすべて閉じたため閉じました"
     else
       warn "#$number を閉じられませんでした"
     fi

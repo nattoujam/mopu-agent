@@ -29,6 +29,8 @@ POLL_LOCK = STATE_DIR / "poll.lock"
 SECRETS_DIR = STATE_DIR / "secrets"
 APP_KEY_FILE = SECRETS_DIR / "github-app.pem"
 APP_CHECK = AGENT_DIR / "tools" / "app-check"
+NOTIFY_FILE = SECRETS_DIR / "nextcloud.json"
+NOTIFY_SENDER = AGENT_DIR / "lib" / "notify.ts"
 MAX_BODY = 1024 * 1024
 
 # 60秒未満はポーリングというより連打で、gh のレート上限と利用枠を無駄に削る
@@ -41,6 +43,8 @@ DURATION_RE = re.compile(r"^\s*(\d+)\s*([smh]?)\s*$", re.IGNORECASE)
 TIMEOUT_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+NOTIFY_URL_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?$")
+NOTIFY_ROOM_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 
 def log(msg):
@@ -371,6 +375,53 @@ def delete_app():
         return update_settings(lambda data: data.pop("github_app", None))
     finally:
         os.close(fd)
+
+
+def notify_view():
+    try:
+        saved = json.loads(NOTIFY_FILE.read_text())
+    except FileNotFoundError:
+        return {"registered": False}
+    except (OSError, ValueError):
+        return {"registered": False, "broken": True}
+    return {
+        "registered": True,
+        "url": saved.get("url"),
+        "room": saved.get("room"),
+        "registered_at": saved.get("registered_at"),
+    }
+
+
+def register_notify(url, room, secret):
+    SECRETS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(SECRETS_DIR, 0o700)
+    config = {
+        "url": url,
+        "room": room,
+        "secret": secret,
+        "registered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    tmp = SECRETS_DIR / f".nextcloud.json.{os.getpid()}.{threading.get_ident()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(config, fh)
+        try:
+            proc = subprocess.run(
+                ["node", str(NOTIFY_SENDER), str(tmp), "mopu-agent の通知を登録しました"],
+                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            raise AppError(504, "Nextcloud への送信がタイムアウトしました") from None
+        except OSError as exc:
+            raise AppError(500, f"node を起動できません: {exc}") from None
+        if proc.returncode != 0:
+            message = proc.stderr.strip().splitlines()[-1:] or ["送信できませんでした"]
+            raise AppError(400, f"テストメッセージを送れませんでした: {message[0]}")
+        os.replace(tmp, NOTIFY_FILE)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return notify_view()
 
 
 def settings_view(settings):
@@ -948,8 +999,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(app_view(load_settings()))
             except ValueError:
                 return self._error(500, "state/settings.json が壊れています")
+        if path == "/api/notify":
+            return self._json(notify_view())
         if path == "/api/tasks":
-            return self._json({"tasks": [task_summary(d) for d in task_ids()[:100]]})
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0].strip()
+            dirs = [d for d in task_ids() if q in f"{d.parent.name}/{d.name}"]
+            return self._json({"tasks": [task_summary(d) for d in dirs[:100]]})
         if path == "/api/dump":
             days = parse_qs(urlparse(self.path).query).get("days", ["0"])[0]
             if not days.isdigit():
@@ -1010,6 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._save_repo(body)
         if path == "/api/github-app":
             return self._register_app(body)
+        if path == "/api/notify":
+            return self._register_notify(body)
         if path == "/api/scheduler":
             interval = None
             if "interval" in body:
@@ -1059,6 +1116,9 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlparse(self.path).path)
         if path == "/api/settings/repo":
             return self._delete_repo(body)
+        if path == "/api/notify":
+            NOTIFY_FILE.unlink(missing_ok=True)
+            return self._json(notify_view())
         if path != "/api/github-app":
             return self._error(404, "not found")
         try:
@@ -1081,6 +1141,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(app_view(register_app(app_id, pem.replace("\r\n", "\n"))))
         except AppError as exc:
             return self._json({"error": str(exc), "field": "app.private_key"}, exc.code)
+
+    def _register_notify(self, body):
+        if not isinstance(body, dict):
+            return self._error(400, "JSON オブジェクトで指定してください")
+        url = str(body.get("url") or "").strip().rstrip("/")
+        if not NOTIFY_URL_RE.match(url):
+            return self._json({"error": "https:// で始まる Nextcloud の URL を指定してください", "field": "notify.url"}, 400)
+        room = str(body.get("room") or "").strip()
+        if not NOTIFY_ROOM_RE.match(room):
+            return self._json({"error": "会話の URL の /call/ に続く英数字を指定してください", "field": "notify.room"}, 400)
+        secret = str(body.get("secret") or "").strip()
+        if not secret or CONTROL_RE.search(secret):
+            return self._json({"error": "bot を登録したときの secret を指定してください", "field": "notify.secret"}, 400)
+        try:
+            return self._json(register_notify(url, room, secret))
+        except AppError as exc:
+            return self._error(exc.code, str(exc))
 
     def _save_global(self, body):
         if not isinstance(body, dict):
