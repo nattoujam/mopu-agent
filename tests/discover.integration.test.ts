@@ -113,6 +113,12 @@ describe("comments", () => {
     });
     strictEqual(t.title, "Issue 42 のタイトル");
     strictEqual(t.body, "Issue 42 の本文");
+    strictEqual(t.branch, undefined);
+  });
+
+  it("エージェント以外の PR へのコメントは、その PR のブランチを作業先に載せる", () => {
+    const t = commentTasks(workspace()).find((x) => x.number === 7) as CommentTask;
+    strictEqual(t.branch, "feature/hand-made");
   });
 
   it("PR レビューコメントは reply_kind が review になる", () => {

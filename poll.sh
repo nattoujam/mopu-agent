@@ -198,12 +198,17 @@ mark_task_seen() {
 
 # 進行中 PR を持つ Issue 自身のタスクは通す。ここを塞ぐとレビュー指摘を反映できず
 # 「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる。
-# 質問への回答や分解案の承認を待っている Issue へのコメントも、着手済みのタスクの続きなので通す
+# 質問への回答や分解案の承認を待っている Issue へのコメントも、着手済みのタスクの続きなので通す。
+# mopu-agent 以外が出した PR のブランチに積むタスクは、PR を増やさないので通す
 in_flight_blocked() {
-  local number="$1" kind="${2:-}" b
+  local task="$1" number kind branch b
+  number=$(jq -r '.number' <<<"$task")
+  kind=$(jq -r '.kind' <<<"$task")
+  branch=$(task_branch "$task" "$number")
   (( MAX_OPEN_AGENT_PRS > 0 )) || return 1
+  [[ $branch == "$BRANCH_PREFIX"* ]] || return 1
   for b in "${OPEN_AGENT_BRANCHES[@]}"; do
-    [[ $b == "${BRANCH_PREFIX}${number}" ]] && return 1
+    [[ $b == "$branch" ]] && return 1
   done
   (( OPEN_AGENT_PRS >= MAX_OPEN_AGENT_PRS )) || return 1
   [[ $kind == comment ]] || return 0
@@ -260,7 +265,7 @@ if (( DRY_RUN )); then
       line+="  ← 分解案の承認（エージェントは起動しない）"
     elif blocking=$(sub_issue_deps "$t"); then
       line+="  ← 先行する sub-issue ($blocking) 待ちでスキップ"
-    elif in_flight_blocked "$(jq -r '.number' <<<"$t")" "$(jq -r '.kind' <<<"$t")"; then
+    elif in_flight_blocked "$t"; then
       line+="  ← 進行中の PR があるためスキップ"
     fi
     printf '%s\n' "$line"
@@ -312,7 +317,7 @@ while IFS= read -r t <&3; do
     log "先行する sub-issue ($blocking) が未マージのためスキップします: #$number"
     continue
   fi
-  if in_flight_blocked "$number" "$kind"; then
+  if in_flight_blocked "$t"; then
     log "進行中の PR が $OPEN_AGENT_PRS 件あるためスキップします: #$number（マージ/クローズ後に再検出されます）"
     # ラベルは毎回引き直せるが、コメントは last-poll が進めば窓から外れて消える
     [[ $(jq -r '.kind' <<<"$t") == comment ]] && INCOMPLETE_RUN=1
@@ -334,8 +339,9 @@ while IFS= read -r t <&3; do
   # shellcheck disable=SC2034  # run-task.sh が --retry 用の控えとして書き出す
   CURRENT_TASK_JSON="$t"
   run_task "$kind" "$number" "$title" "$body"
-  if (( LAST_TASK_OPENED_PR )); then
-    OPEN_AGENT_BRANCHES+=("${BRANCH_PREFIX}${number}")
+  branch=$(task_branch "$t" "$number")
+  if (( LAST_TASK_OPENED_PR )) && [[ $branch == "$BRANCH_PREFIX"* ]]; then
+    OPEN_AGENT_BRANCHES+=("$branch")
     (( OPEN_AGENT_PRS++ ))
   fi
   mark_task_seen "$t"

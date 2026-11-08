@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# エージェントが自分のブランチを push するための唯一の入口。sandbox の外
+# エージェントがタスクのブランチを push するための唯一の入口。sandbox の外
 # （excludedCommands）で動くので、引数も cwd も信用せず、親が export した
 # MOPU_TASK_DIR / MOPU_BRANCH だけを見る
 set -euo pipefail
@@ -17,12 +17,17 @@ source "$AGENT_DIR/lib/workspace.sh"
 
 repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレクトリです"
 load_config "$repo" >/dev/null
-[[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
 
 wt=$(workspace_repo "$(realpath -m -- "$MOPU_TASK_DIR")")
 if use_github_app; then
   GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
   export GH_TOKEN
+fi
+# gh pr view にブランチ名を渡すと、フォークから出た同名ブランチの PR も当たるため isCrossRepository を見る
+if [[ $MOPU_BRANCH != "$BRANCH_PREFIX"* ]]; then
+  [[ $(gh pr view "$MOPU_BRANCH" -R "$REPO" --json state,isCrossRepository \
+    --jq '"\(.state) \(.isCrossRepository)"' 2>/dev/null) == "OPEN false" ]] \
+    || die "想定外のブランチです: $MOPU_BRANCH"
 fi
 push_workspace "$wt" "$MOPU_BRANCH"
 echo "pushed: $MOPU_BRANCH"

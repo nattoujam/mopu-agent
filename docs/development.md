@@ -67,7 +67,7 @@ lib/learn.sh            差し戻しのあった PR から基準の案を作ら�
 lib/project-memory.sh   対象リポジトリの CLAUDE.md と rules をベースブランチから読み、プロンプトにする
 lib/notify.ts           Nextcloud Talk の bot API に署名して送る。文面は common.sh などの呼び出し側が作る
 tools/fake-agent        claude の代役スタブ（動作検証用）
-tools/push-branch       エージェントが自分のブランチを push する入口（sandbox 外で動く）
+tools/push-branch       エージェントがタスクのブランチを push する入口（sandbox 外で動く）
 tools/run-container     エージェントが設定済みの検証をコンテナで回す入口（同上、設定した検証だけ）
 tools/guard-host-commands 上の 2 つを単独でしか呼べなくする PreToolUse フック
 tools/track-phase       ファイルの書き換えとコミットを見て、フェーズを「実装」に進める PreToolUse フック

@@ -457,6 +457,14 @@ run_task() {
   return "$rc"
 }
 
+# 使い方: task_branch <タスク JSON> <番号>
+# タスクがコミットを積むブランチ
+task_branch() {
+  local b
+  b=$(jq -r '.branch // empty' <<<"$1" 2>/dev/null)
+  printf '%s' "${b:-${BRANCH_PREFIX}$2}"
+}
+
 # CI の関門と critic を抜けたか。critic が動かなかった（error）ときは、変更の問題ではないので止めない
 gate_passed() {
   jq -e '(.verdict == "passed" or .verdict == "skipped")
@@ -468,7 +476,8 @@ run_task_body() {
   local task_id
   task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
   set_reply_target "$number" "${CURRENT_TASK_JSON:-}"
-  local branch="${BRANCH_PREFIX}${number}"
+  local branch
+  branch=$(task_branch "${CURRENT_TASK_JSON:-}" "$number")
   local task_dir="$WORKTREES_DIR/$task_id"
 
   # --retry では新しい worktree を作らず、前回の失敗が残したものを使う

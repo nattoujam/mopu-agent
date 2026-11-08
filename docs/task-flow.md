@@ -15,6 +15,8 @@ poll.sh がタスクをどう選び、どう区切り、どこで止まるか。
 - CI が動かない変更（対象外）は、critic を通れば Open にする。critic 自体が動かなかったときも Open にし、本文にその旨が出る
 - コメントで指示した修正が検証を通らなかったときは、Open だった PR も Draft に戻す
 - コメントで指示した修正では、PR の本文は書き換えない
+- mopu-agent 以外が同じリポジトリから出した open な PR（Dependabot の PR など）へのコメントでは、新しい PR を作らず、その PR のブランチにコミットを足す。コミットを足した Dependabot の PR は、以後 Dependabot が rebase しない
+- フォークから出た PR や閉じた PR へのコメントでは、`agent/issue-<PR 番号>` で新しい PR を作る
 
 Assignees を付けないのは、**GitHub App の bot ユーザーが assignable ではない**ため。
 `GET /repos/{owner}/{repo}/assignees/<app-slug>[bot]` は 404 を返す（人間のアカウントは 204）。
@@ -241,6 +243,7 @@ clone の失敗や App の未インストールなど、1 つのリポジトリ�
   塞ぐとレビュー指摘を反映できず、「PR が open なので着手できない / 着手できないので PR が進まない」で詰まる。
   PR へのコメントは、ブランチ名 `agent/issue-<番号>` から元 Issue の番号に読み替える。
   読み替えるのは作業対象の番号だけで、報告はコメントが来た PR 側に返る
+- mopu-agent 以外が出した PR のブランチにコミットを足すタスクも、PR が増えないので常に処理される
 - `agent:awaiting-input` と `agent:awaiting-approval` の Issue への `/claude` コメントも例外として処理される
 - `--task` での手動指定もゲートを通さない
 - `0` にすると無制限になる

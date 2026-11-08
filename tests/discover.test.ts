@@ -2,6 +2,7 @@ import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   branchToIssueNumber,
+  commentTarget,
   computeSince,
   extractInstruction,
   handledPrs,
@@ -83,6 +84,23 @@ describe("branchToIssueNumber", () => {
   it("prefix の後が数値でなければ null", () =>
     strictEqual(branchToIssueNumber("agent/issue-bot-check", P), null));
   it("空文字は null", () => strictEqual(branchToIssueNumber("", P), null));
+});
+
+describe("commentTarget", () => {
+  const P = "agent/issue-";
+  const open = { state: "OPEN", isCrossRepository: false };
+  it("エージェントの PR は元 Issue に読み替え、ブランチは載せない", () =>
+    deepStrictEqual(commentTarget(55, { ...open, headRefName: "agent/issue-42" }, P), { number: 42 }));
+  it("それ以外の open な PR は、PR 番号のままその PR のブランチを載せる", () =>
+    deepStrictEqual(commentTarget(65, { ...open, headRefName: "deps/bump-group-a1b2" }, P), {
+      number: 65,
+      branch: "deps/bump-group-a1b2",
+    }));
+  it("フォークからの PR はブランチを載せない", () =>
+    deepStrictEqual(commentTarget(8, { ...open, isCrossRepository: true, headRefName: "feature/x" }, P), { number: 8 }));
+  it("閉じた PR はブランチを載せない", () =>
+    deepStrictEqual(commentTarget(9, { ...open, state: "MERGED", headRefName: "feature/x" }, P), { number: 9 }));
+  it("PR でなければ番号をそのまま使う", () => deepStrictEqual(commentTarget(7, null, P), { number: 7 }));
 });
 
 describe("issueNumberFromUrl", () => {

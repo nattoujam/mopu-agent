@@ -31,6 +31,7 @@ export type CommentTask = {
   body: string;
   actor: string;
   comments: CommentRef[];
+  branch?: string;
 };
 
 export type LearnComment = {
@@ -161,7 +162,21 @@ export const branchToIssueNumber = (head: string, prefix: string): number | null
   return /^[0-9]+$/.test(suffix) ? Number(suffix) : null;
 };
 
-export const issueNumberFromUrl = (url: string): number | null => {
+export type PrHead = { headRefName?: string; state?: string; isCrossRepository?: boolean };
+
+export type CommentTarget = { number: number; branch?: string };
+
+// PR へのコメントは PR 番号で届く。エージェントの PR なら作業対象は元 Issue に読み替え、
+// それ以外の open な PR ならその PR のブランチにコミットを積む。フォークのブランチには push できないため除く
+export function commentTarget(number: number, pr: PrHead | null, prefix: string): CommentTarget {
+  const head = pr?.headRefName ?? "";
+  const issue = branchToIssueNumber(head, prefix);
+  if (issue !== null) return { number: issue };
+  if (head && pr?.state === "OPEN" && pr.isCrossRepository === false) return { number, branch: head };
+  return { number };
+}
+
+export const issueNumberFromUrl =(url: string): number | null => {
   const m = url.match(/([0-9]+)$/);
   return m ? Number(m[1]) : null;
 };
@@ -350,19 +365,18 @@ const discoverLabeled = (cfg: Config): void => {
   }
 };
 
-// PR へのコメントは PR 番号で届く。タスクの番号は元 Issue のものでなければならない
-const resolveIssueNumber = (number: number, cfg: Config): number => {
-  const res = ghJson<{ headRefName?: string }>([
+function resolveTarget(number: number, cfg: Config): CommentTarget {
+  const pr = ghJson<PrHead>([
     "pr",
     "view",
     String(number),
     "-R",
     cfg.repo,
     "--json",
-    "headRefName",
+    "headRefName,state,isCrossRepository",
   ]);
-  return branchToIssueNumber(res?.headRefName ?? "", cfg.branchPrefix) ?? number;
-};
+  return commentTarget(number, pr, cfg.branchPrefix);
+}
 
 const fetchComments = (cfg: Config, since: string): RawComment[] => {
   // since は updated_at 基準。per_page で溢れるときに窓の新しい側を落とさないよう降順で取る
@@ -408,7 +422,8 @@ const discoverComments = (cfg: Config): void => {
   );
 
   // PR 番号から Issue 番号への読み替えは API を叩くので、同じ PR では使い回す
-  const resolved = new Map<number, number>();
+  const resolved = new Map<number, CommentTarget>();
+  const branches = new Map<number, string>();
   const hits = new Map<number, CommentRef[]>();
 
   for (const row of fetchComments(cfg, since)) {
@@ -425,11 +440,13 @@ const discoverComments = (cfg: Config): void => {
     const replyNumber = issueNumberFromUrl(row.issue_url);
     if (replyNumber === null) continue;
 
-    let number = resolved.get(replyNumber);
-    if (number === undefined) {
-      number = resolveIssueNumber(replyNumber, cfg);
-      resolved.set(replyNumber, number);
+    let target = resolved.get(replyNumber);
+    if (target === undefined) {
+      target = resolveTarget(replyNumber, cfg);
+      resolved.set(replyNumber, target);
     }
+    const { number } = target;
+    if (target.branch) branches.set(number, target.branch);
 
     const list = hits.get(number) ?? [];
     list.push({
@@ -460,6 +477,7 @@ const discoverComments = (cfg: Config): void => {
     ]);
     if (issue === null) continue;
 
+    const branch = branches.get(number);
     emit({
       kind: "comment",
       number,
@@ -467,6 +485,7 @@ const discoverComments = (cfg: Config): void => {
       body: chomp(issue.body ?? ""),
       actor: first.actor,
       comments,
+      ...(branch ? { branch } : {}),
     });
   }
 };

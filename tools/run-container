@@ -7,7 +7,7 @@ set -euo pipefail
 usage() { echo "使い方: run-container <検証のキー> [引数 ...]" >&2; exit 2; }
 (( $# >= 1 )) || usage
 key="$1"; shift
-: "${MOPU_TASK_DIR:?}" "${MOPU_BRANCH:?}"
+: "${MOPU_TASK_DIR:?}"
 
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$AGENT_DIR/lib/common.sh"
@@ -15,7 +15,6 @@ source "$AGENT_DIR/lib/workspace.sh"
 
 repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレクトリです"
 load_config "$repo" >/dev/null
-[[ $MOPU_BRANCH == "$BRANCH_PREFIX"* ]] || die "想定外のブランチです: $MOPU_BRANCH"
 
 check=$(jq -c --arg k "$key" 'first(.[] | select(.name == $k)) // empty' <<<"$CONTAINER_CHECKS")
 [[ -n $check ]] || die "この検証は登録されていません: $key（登録済み: $(jq -r 'map(.name) | join(" ") | if . == "" then "なし" else . end' <<<"$CONTAINER_CHECKS")）"
