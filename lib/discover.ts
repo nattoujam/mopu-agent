@@ -24,6 +24,14 @@ export type CommentRef = {
   url: string;
 };
 
+export type HistoryComment = {
+  actor: string;
+  by_agent: boolean;
+  body: string;
+  url: string;
+  created_at: string;
+};
+
 export type CommentTask = {
   kind: "comment";
   number: number;
@@ -31,6 +39,7 @@ export type CommentTask = {
   body: string;
   actor: string;
   comments: CommentRef[];
+  history: HistoryComment[];
   branch?: string;
 };
 
@@ -197,6 +206,26 @@ export const sortComments = (rows: RawComment[]): RawComment[] =>
     if (na !== nb) return na - nb;
     return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
   });
+
+export const HISTORY_MAX_CHARS = 20000;
+
+export function selectHistory(
+  rows: (HistoryComment & { id: string })[],
+  exclude: Set<string>,
+  allowed: string,
+  maxChars: number,
+): HistoryComment[] {
+  const picked = rows
+    .filter((r) => r.body.trim() && !exclude.has(r.id) && isAllowedActor(r.actor, allowed))
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+  let total = 0;
+  let from = picked.length;
+  while (from > 0 && total + (picked[from - 1]?.body.length ?? 0) <= maxChars) {
+    from -= 1;
+    total += picked[from]?.body.length ?? 0;
+  }
+  return picked.slice(from).map(({ actor, by_agent, body, url, created_at }) => ({ actor, by_agent, body, url, created_at }));
+}
 
 // open で番号が若い兄弟は、PR がまだベースに入っていない前提タスク。
 // poll.sh はこれが残るうちは着手を見送る
@@ -409,6 +438,35 @@ const fetchComments = (cfg: Config, since: string): RawComment[] => {
   return sortComments(rows);
 };
 
+// Issue と PR は番号の空間が同じで、PR の会話は issues の API から読める。
+// レビュー本体とインラインのコメントは PR にしか無く、Issue の番号では 404 になって空で返る
+function fetchThread(cfg: Config, numbers: number[]): (HistoryComment & { id: string })[] {
+  const rows: (HistoryComment & { id: string })[] = [];
+  const push = (id: number, actor: string, body: string, url: string, at: string): void => {
+    const text = body ?? "";
+    rows.push({ id: String(id), actor, by_agent: text.includes(cfg.commentMarker), body: chomp(text), url, created_at: at });
+  };
+  for (const n of numbers) {
+    for (const c of ghJson<RestComment[]>(["api", `repos/${cfg.repo}/issues/${n}/comments?per_page=100`]) ?? []) {
+      push(c.id, c.user.login, c.body, c.html_url, c.created_at);
+    }
+    for (const c of ghJson<RestComment[]>(["api", `repos/${cfg.repo}/pulls/${n}/comments?per_page=100`]) ?? []) {
+      push(c.id, c.user.login, c.body, c.html_url, c.created_at);
+    }
+    type Review = { id: number; body: string | null; user: { login: string }; html_url: string; submitted_at: string };
+    for (const r of ghJson<Review[]>(["api", `repos/${cfg.repo}/pulls/${n}/reviews?per_page=100`]) ?? []) {
+      push(r.id, r.user.login, r.body ?? "", r.html_url, r.submitted_at ?? "");
+    }
+  }
+  return rows;
+}
+
+// Issue に付いたコメントは PR の番号を持たない。方針を決めた提案と回答が PR 側にあっても読めるよう、ブランチから PR を引くため
+function threadNumbers(cfg: Config, number: number, comments: CommentRef[], branch: string): number[] {
+  const pr = ghJson<{ number: number }>(["pr", "view", branch, "-R", cfg.repo, "--json", "number"]);
+  return [...new Set([number, ...comments.map((c) => c.reply_number), ...(pr ? [pr.number] : [])])];
+}
+
 // 同じ作業対象へのコメントは 1 タスクに畳む。同じブランチを触る以上、別々の
 // セッションで順に処理しても後のセッションが前の変更を読み直すだけで、
 // 指示どうしの矛盾も見つけられない
@@ -478,6 +536,12 @@ const discoverComments = (cfg: Config): void => {
     if (issue === null) continue;
 
     const branch = branches.get(number);
+    const history = selectHistory(
+      fetchThread(cfg, threadNumbers(cfg, number, comments, branch ?? `${cfg.branchPrefix}${number}`)),
+      new Set(comments.map((c) => c.id)),
+      cfg.allowedActors,
+      HISTORY_MAX_CHARS,
+    );
     emit({
       kind: "comment",
       number,
@@ -485,6 +549,7 @@ const discoverComments = (cfg: Config): void => {
       body: chomp(issue.body ?? ""),
       actor: first.actor,
       comments,
+      history,
       ...(branch ? { branch } : {}),
     });
   }

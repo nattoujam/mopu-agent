@@ -1,0 +1,18 @@
+{
+  "issues/42/comments": [
+    {"id": 601, "body": "Issue 側での補足", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/issues/42#c601", "created_at": "2026-09-05T10:00:00Z"},
+    {"id": 602, "body": "第三者の意見", "user": {"login": "stranger"}, "html_url": "https://github.com/o/r/issues/42#c602", "created_at": "2026-09-05T10:30:00Z"}
+  ],
+  "issues/55/comments": [
+    {"id": 603, "body": "<!-- mopu-agent -->\n\n案は次の 2 つです。\n\n1. 表をコードに置く\n2. 表を消す\n", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#c603", "created_at": "2026-09-05T12:00:00Z"},
+    {"id": 604, "body": "", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#c604", "created_at": "2026-09-05T13:00:00Z"},
+    {"id": 505, "body": "/claude PR コメントからの指示\n続きの行\n\n", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#c505", "created_at": "2026-09-06T05:00:00Z"}
+  ],
+  "pulls/55/comments": [
+    {"id": 901, "body": "/claude レビュー指摘を直して", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#discussion_r901", "created_at": "2026-09-06T00:30:00Z"}
+  ],
+  "pulls/55/reviews": [
+    {"id": 701, "body": "全体の方向は良いです", "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#pullrequestreview-701", "submitted_at": "2026-09-05T11:00:00Z"},
+    {"id": 702, "body": null, "user": {"login": "nattoujam"}, "html_url": "https://github.com/o/r/pull/55#pullrequestreview-702", "submitted_at": "2026-09-05T11:30:00Z"}
+  ]
+}

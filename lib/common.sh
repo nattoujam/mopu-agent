@@ -65,6 +65,13 @@ issue_ref() { printf '%s%s' "${1#*/}" "${2:+#$2}"; }
 
 md_quote() { printf '> %s' "${1//$'\n'/$'\n'> }"; }
 
+# 使い方: render_history <タスク JSON>
+# コメントの本文は見出しやコードフェンスを含むので、引用にして周りの見出しと混ざらないようにする
+render_history() {
+  jq -r '(.history // [])[]
+    | "#### \(if .by_agent then "mopu-agent の投稿" else .actor end)（\(.created_at)）\n\(.url)\n\n\(.body | split("\n") | map("> " + .) | join("\n"))\n"' <<<"$1" 2>/dev/null
+}
+
 task_issue() {
   local slug="${1%/*}" task_id="${1##*/}"
   [[ $task_id =~ ^(issue|comment)-([0-9]+)- ]] || return 1

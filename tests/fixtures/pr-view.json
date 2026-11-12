@@ -1,2 +1,4 @@
 {"55":{"headRefName":"agent/issue-42","state":"OPEN","isCrossRepository":false},
- "7":{"headRefName":"feature/hand-made","state":"OPEN","isCrossRepository":false}}
+ "7":{"headRefName":"feature/hand-made","state":"OPEN","isCrossRepository":false},
+ "agent/issue-42":{"number":55},
+ "feature/hand-made":{"number":7}}

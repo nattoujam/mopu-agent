@@ -32,9 +32,11 @@ fail() {
   echo "## 依頼"
   echo
   if [[ -s $MOPU_LOG_DIR/task.json ]]; then
-    jq -r '"### \(.title // "")\n\n\(.body // "")",
-           (if ((.comments // []) | length) > 0 then "\n### この作業で対応したコメント\n", ((.comments // [])[] | "- \(.instruction)") else empty end)' \
-      "$MOPU_LOG_DIR/task.json"
+    task=$(<"$MOPU_LOG_DIR/task.json")
+    jq -r '"### \(.title // "")\n\n\(.body // "")"' <<<"$task"
+    history=$(render_history "$task")
+    [[ -n $history ]] && printf '\n### その後のやり取り（古い順）\n\n%s\n' "$history"
+    jq -r 'if ((.comments // []) | length) > 0 then "\n### この作業で対応したコメント\n", ((.comments // [])[] | "- \(.instruction)") else empty end' <<<"$task"
   else
     echo "（依頼の控えが無い）"
   fi

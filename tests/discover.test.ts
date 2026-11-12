@@ -13,6 +13,7 @@ import {
   isTriggerLine,
   nextLearnSource,
   parseRun,
+  selectHistory,
   sortComments,
   stripCodeBlocks,
   subIssueDeps,
@@ -23,6 +24,42 @@ import {
 } from "../lib/discover.ts";
 
 const T = "/claude";
+
+describe("selectHistory", () => {
+  function row(id: string, at: string, body: string, actor = "nattoujam") {
+    return { id, actor, by_agent: false, body, url: `https://github.com/o/r/issues/1#c${id}`, created_at: at };
+  }
+
+  it("上限を超える分は古い側から落とす", () => {
+    const rows = [
+      row("3", "2026-09-03T00:00:00Z", "c".repeat(30)),
+      row("1", "2026-09-01T00:00:00Z", "a".repeat(10)),
+      row("2", "2026-09-02T00:00:00Z", "b".repeat(25)),
+    ];
+    deepStrictEqual(
+      selectHistory(rows, new Set(), "nattoujam", 60).map((h) => h.body.length),
+      [25, 30],
+    );
+  });
+
+  it("上限ちょうどまでは残す", () => {
+    const rows = [row("1", "2026-09-01T00:00:00Z", "a".repeat(10)), row("2", "2026-09-02T00:00:00Z", "b".repeat(20))];
+    strictEqual(selectHistory(rows, new Set(), "nattoujam", 30).length, 2);
+  });
+
+  it("除外する ID・空の本文・依頼できないユーザーの投稿を落とす", () => {
+    const rows = [
+      row("1", "2026-09-01T00:00:00Z", "残る"),
+      row("2", "2026-09-02T00:00:00Z", "今回の指示"),
+      row("3", "2026-09-03T00:00:00Z", "  \n"),
+      row("4", "2026-09-04T00:00:00Z", "第三者", "stranger"),
+    ];
+    deepStrictEqual(
+      selectHistory(rows, new Set(["2"]), "nattoujam", 1000).map((h) => h.body),
+      ["残る"],
+    );
+  });
+});
 
 describe("stripCodeBlocks", () => {
   it("フェンスの中身とフェンス行自体を落とす", () => {

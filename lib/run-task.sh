@@ -254,6 +254,16 @@ build_prompt() {
     echo '```'
     printf '%s\n' "${body:-(本文なし)}"
     echo '```'
+    if [[ $kind == comment ]]; then
+      local history
+      history=$(render_history "$task")
+      if [[ -n $history ]]; then
+        echo
+        echo "## 背景: その後のやり取り（古い順）"
+        echo
+        printf '%s\n' "$history"
+      fi
+    fi
   } | head -c 60000
 }
 

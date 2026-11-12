@@ -116,6 +116,23 @@ describe("comments", () => {
     strictEqual(t.branch, undefined);
   });
 
+  it("Issue と作業先の PR のやり取りを、依頼できるユーザーの投稿に絞って古い順に載せる", () => {
+    const t = commentTasks(workspace()).find((x) => x.number === 42) as CommentTask;
+    deepStrictEqual(
+      t.history.map((h) => [h.url, h.by_agent]),
+      [
+        ["https://github.com/o/r/issues/42#c601", false],
+        ["https://github.com/o/r/pull/55#pullrequestreview-701", false],
+        ["https://github.com/o/r/pull/55#c603", true],
+      ],
+    );
+  });
+
+  it("やり取りが無ければ history は空", () => {
+    const t = commentTasks(workspace()).find((x) => x.number === 3) as CommentTask;
+    deepStrictEqual(t.history, []);
+  });
+
   it("エージェント以外の PR へのコメントは、その PR のブランチを作業先に載せる", () => {
     const t = commentTasks(workspace()).find((x) => x.number === 7) as CommentTask;
     strictEqual(t.branch, "feature/hand-made");
