@@ -26,7 +26,7 @@ SANDBOX_PLACEHOLDERS=(
 ensure_excludes() {
   local f="$REPO_DIR/.git/info/exclude" p
   mkdir -p "${f%/*}"
-  for p in "/$PLAN_FILE_NAME" "/$NOTE_FILE_NAME" "/$REPLIES_FILE_NAME" "/$QUESTION_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
+  for p in "/$PLAN_FILE_NAME" "/$NOTE_FILE_NAME" "/$REPLIES_FILE_NAME" "/$QUESTION_FILE_NAME" "/$NO_SPLIT_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
     grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
   done
 }

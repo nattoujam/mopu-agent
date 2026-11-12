@@ -267,7 +267,28 @@ build_prompt() {
   } | head -c 60000
 }
 
+# 使い方: is_our_pr <gh pr view の JSON>
+# tools/push-branch が作る仮の PR も、この後に書き換える本文も COMMENT_MARKER を持つ
+is_our_pr() {
+  jq -e --arg m "$COMMENT_MARKER" '(.body // "") | contains($m)' <<<"$1" >/dev/null 2>&1
+}
+
+# 使い方: build_pr_context <gh pr view の JSON>
+build_pr_context() {
+  echo "## 作業先の PR"
+  echo
+  if is_our_pr "$1"; then
+    echo "mopu-agent が作った PR で、今の本文は次のとおり。"
+    echo
+    md_quote "$(jq -r '.body // ""' <<<"$1")"
+    echo
+  else
+    echo "mopu-agent 以外が作った PR。"
+  fi
+}
+
 QUESTION_FILE_NAME='.mopu-agent-question.md'
+NO_SPLIT_FILE_NAME='.mopu-agent-no-split.md'
 
 build_system_prompt() {
   local kind="$1" branch="$2" wt="$3" decompose_off="$4" p="$AGENT_DIR/prompts" text
@@ -282,7 +303,8 @@ build_system_prompt() {
       text=$(<"$p/decompose-off.md")
       printf '%s\n' "${text//"%%REASON%%"/"$decompose_off"}"
     else
-      sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" -e "s|%%PLAN_FILE%%|$wt/$PLAN_FILE_NAME|g" "$p/decompose.md"
+      sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" -e "s|%%PLAN_FILE%%|$wt/$PLAN_FILE_NAME|g" \
+        -e "s|%%NO_SPLIT_FILE%%|$wt/$NO_SPLIT_FILE_NAME|g" "$p/decompose.md"
     fi
 
     printf '\n'
@@ -303,7 +325,7 @@ build_system_prompt() {
     [[ -n $AGENT_GH_TOKEN ]] || { printf '\n'; cat "$p/no-gh.md"; }
 
     printf '\n'
-    cat "$p/report.md"
+    sed "s|%%BASE_BRANCH%%|$BASE_BRANCH|g" "$p/report.md"
     printf '\n```markdown\n'
     cat "$p/pr-body.md"
     printf '```\n'
@@ -507,7 +529,7 @@ run_task_body() {
   local replies_file="$wt/$REPLIES_FILE_NAME"
   local question_file="$wt/$QUESTION_FILE_NAME"
   # --retry で引き継いだ作業ツリーには前回の返信と質問と方針が残っている
-  rm -f "$replies_file" "$question_file" "$wt/$NOTE_FILE_NAME"
+  rm -f "$replies_file" "$question_file" "$wt/$NOTE_FILE_NAME" "$wt/$NO_SPLIT_FILE_NAME"
   local log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
   TASK_OUTCOME_FILE="$log_dir/outcome.json"
@@ -582,8 +604,10 @@ run_task_body() {
     log "[$task_id] 対象リポジトリの指示を ${#memory} 文字足します: $(agent_relpath "$log_dir/project-memory.md")"
   fi
 
-  local prompt pending_plan=""
+  local prompt pending_plan="" pr_before
   prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
+  pr_before=$(gh pr view "$branch" -R "$REPO" --json body 2>/dev/null)
+  [[ -n $pr_before ]] && prompt+=$'\n\n'"$(build_pr_context "$pr_before")"
   [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
   if [[ $kind == comment ]] && (( ! no_decompose )) && pending_plan=$(latest_plan_comment "$number"); then
     prompt+=$'\n\n'"$(build_pending_plan_context "$pending_plan")"
@@ -741,33 +765,37 @@ run_task_body() {
   fi
 
   # PR は検証を通るまで draft にしておき、通ったときだけ ready にしてレビューを依頼する。
-  # draft は tools/push-branch が最初の push で作った仮の PR なので、本文を結果で書き換える。
-  # 既に ready の PR（コメントからの追加コミット）は本文を変えず、検証を通らなければ draft に戻す
+  # mopu-agent の PR は、最終メッセージがベースからの差分全体の説明なので、毎回本文を置き換える。
+  # 人が書いた PR の本文は書き換えず、検証を通らなければ draft に戻すだけにする
   local reviewed=""
   [[ $(jq -r '.critic_verdict // empty' "$log_dir/ci-gate.json" 2>/dev/null) == approve ]] && reviewed="レビュアー承認"
   task_phase publish "$reviewed"
-  local pr_url pr_out pr_created=0 pr_draft gate pr_body passed=0 ok=1
+  local pr_json pr_url pr_out pr_draft pr_ours=0 body_written=0 gate pr_body passed=0 ok=1
   gate_passed "$log_dir" && passed=1
   gate=$(ci_gate_report "$log_dir")
-  pr_body=$(printf 'Closes #%s\n\n%s\n\n%s---\n%s' "$number" "$result" "${gate:+$gate$'\n\n'}" "$COMMENT_MARKER")
-  pr_url=$(gh pr view "$branch" -R "$REPO" --json url --jq .url 2>/dev/null)
-  pr_draft=$(gh pr view "$branch" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null)
-  if [[ -n $pr_url && $pr_draft == true ]]; then
+  pr_body=$(printf 'Closes #%s\n\n%s\n\n%s---\n%s' "$number" "$result" "${gate:+## 検証$'\n\n'$gate$'\n\n'}" "$COMMENT_MARKER")
+  pr_json=$(gh pr view "$branch" -R "$REPO" --json url,isDraft,body 2>/dev/null)
+  pr_url=$(jq -r '.url // empty' <<<"$pr_json" 2>/dev/null)
+  pr_draft=$(jq -r '.isDraft // empty' <<<"$pr_json" 2>/dev/null)
+  is_our_pr "$pr_json" && pr_ours=1
+  if [[ -n $pr_url ]] && (( pr_ours )); then
     if gh pr edit "$branch" -R "$REPO" --body "$pr_body" >/dev/null; then
-      pr_created=1
+      body_written=1
     else
-      warn "[$task_id] draft PR の本文を書き換えられませんでした: $pr_url"
+      warn "[$task_id] PR の本文を書き換えられませんでした: $pr_url"
     fi
-    if (( passed )); then
+    if [[ $pr_draft == true ]] && (( passed )); then
       if gh pr ready "$branch" -R "$REPO" >/dev/null; then
         request_review "$task_id" "$branch"
       else
         warn "[$task_id] draft PR を出せませんでした: $pr_url"
         ok=0
       fi
+    elif [[ $pr_draft != true ]] && (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
+      warn "[$task_id] 検証を通らなかった PR を draft に戻せませんでした: $pr_url"
     fi
   elif [[ -n $pr_url ]]; then
-    if (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
+    if [[ $pr_draft != true ]] && (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
       warn "[$task_id] 検証を通らなかった PR を draft に戻せませんでした: $pr_url"
     fi
   else
@@ -779,7 +807,7 @@ run_task_body() {
       --body "$pr_body" 2>&1)
     then
       pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
-      pr_created=1
+      body_written=1
       (( passed )) && request_review "$task_id" "$branch"
     else
       fail_task "$task_id" "PR の作成に失敗しました: $pr_out"
@@ -798,20 +826,20 @@ run_task_body() {
     brief=$(lead_quote "$result")
     task_phase review "PR #${pr_url##*/}" "推定 \$$(printf '%.2f' "$cost")${brief:+$'\n'$brief}"
     set_labels "$number" "$LABEL_DONE"
-    headline=$( (( pr_created )) && printf 'PR を作成しました' || printf 'PR を更新しました' )
+    headline=$( [[ -z $pr_before ]] && printf 'PR を作成しました' || printf 'PR を更新しました' )
   else
     fail_task "$task_id" "検証を通らなかったため、PR を draft のまま止めました"
     set_labels "$number" "$LABEL_FAILED"
     headline='検証を通らなかったため、PR を draft のまま止めました（レビューは依頼していません）'
   fi
-  # 新規作成なら変更内容の説明は PR 本文（$result）に載る。既存 PR への追加
-  # コミットでは PR 本文が書き換わらないため、返信に含めないと応答が消える
+  # 人が書いた PR へのコミットでは最終メッセージが本文に載らないため、返信に含めないと応答が消える
   local summary fallback=""
-  (( pr_created )) || fallback="${result:-（応答なし）}"
-  local gate_block=""
+  (( body_written )) || fallback="${result:-（応答なし）}"
+  local gate_block="" no_split_block=""
   [[ -n $gate ]] && gate_block="$gate"$'\n\n'
-  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n%s推定コスト: $%s' \
-    "$headline" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$gate_block" "$(printf '%.2f' "$cost")")
+  [[ -s $wt/$NO_SPLIT_FILE_NAME ]] && no_split_block="**分解しない理由**: $(<"$wt/$NO_SPLIT_FILE_NAME")"$'\n\n'
+  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n%s%s推定コスト: $%s' \
+    "$headline" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$no_split_block" "$gate_block" "$(printf '%.2f' "$cost")")
   post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""
