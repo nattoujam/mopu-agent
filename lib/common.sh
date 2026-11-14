@@ -268,7 +268,7 @@ require_tools() {
   gh auth status >/dev/null 2>&1 || die "gh が未認証です。gh auth login を実行してください"
   # failIfUnavailable にしてあるので、ここで落とさないとタスクごとに同じ失敗を繰り返す
   bwrap --ro-bind / / --dev /dev --unshare-all true 2>/dev/null \
-    || die "bwrap がユーザー名前空間を作れません。docs/isolation.md の「前提」を参照してください"
+    || die "bwrap がユーザー名前空間を作れません。https://code.claude.com/docs/en/sandboxing を参照してください"
 }
 
 is_allowed_actor() {
