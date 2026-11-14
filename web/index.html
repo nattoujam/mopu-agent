@@ -731,6 +731,7 @@ async function openTask(id) {
       <button data-raw="stream">生ログ (stream.jsonl)</button>
       <button data-raw="stderr" ${data.stderr.trim() ? '' : 'disabled'}>stderr</button>
       <button data-raw="setup" ${data.setup.trim() ? '' : 'disabled'}>setup</button>
+      <button data-dump>書き出し</button>
       ${retryable(s) ? `<button data-retry="${s.number}" data-retry-repo="${esc(s.repo)}">再実行</button>` : ''}
     </div>
     ${data.phases.length ? `<div class="phases">${data.phases.map((p) => phaseBadge(p.phase, p.detail, p.at)).join('<span>→</span>')}</div>` : ''}
@@ -739,6 +740,7 @@ async function openTask(id) {
   pane.querySelectorAll('[data-raw]').forEach((el) => {
     el.onclick = () => showRaw(id, el.dataset.raw);
   });
+  pane.querySelector('[data-dump]').onclick = () => { location.href = `/api/tasks/${taskPath(id)}/dump`; };
   pane.querySelectorAll('[data-retry]').forEach((el) => {
     el.onclick = () => retryTask(el.dataset.retryRepo, el.dataset.retry);
   });

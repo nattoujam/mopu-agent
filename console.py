@@ -883,13 +883,17 @@ def dump_files(days):
     if (STATE_DIR / "repos").is_dir():
         files += sorted((STATE_DIR / "repos").rglob("*"))
     files += [log for log in sorted(RUN_LOG_DIR.glob("*.log")) if stamped_since(log.name, cutoff)]
-    files += [f for task in task_ids() if stamped_since(task.name, cutoff) for f in sorted(task.rglob("*"))]
-    return [f for f in files if f.is_file() and not f.is_symlink()]
+    files = [f for f in files if f.is_file() and not f.is_symlink()]
+    return files + [f for task in task_ids() if stamped_since(task.name, cutoff) for f in task_files(task)]
 
 
-def build_dump(days):
+def task_files(task):
+    return [f for f in sorted(task.rglob("*")) if f.is_file() and not f.is_symlink()]
+
+
+def build_dump(label, files, scope):
     commit = agent_commit()
-    root = f"mopu-dump-{datetime.now():%Y%m%d-%H%M%S}-{commit}"
+    root = f"mopu-{label}-{commit}"
     redacted = 0
     count = 0
     buf = io.BytesIO()
@@ -901,7 +905,7 @@ def build_dump(days):
             info.mtime = int(time.time())
             tar.addfile(info, io.BytesIO(data))
 
-        for path in dump_files(days):
+        for path in files:
             try:
                 data = path.read_bytes()
             except OSError:
@@ -913,7 +917,7 @@ def build_dump(days):
         manifest = {
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "commit": commit,
-            "days": days,
+            **scope,
             "files": count,
             "redacted": redacted,
         }
@@ -939,6 +943,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_dump(self, name, data):
+        self._send(200, data, "application/gzip", {"Content-Disposition": f'attachment; filename="{name}"'})
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, ensure_ascii=False))
@@ -1009,8 +1016,8 @@ class Handler(BaseHTTPRequestHandler):
             days = parse_qs(urlparse(self.path).query).get("days", ["0"])[0]
             if not days.isdigit():
                 return self._error(400, "days は 0 以上の整数で指定してください")
-            name, data = build_dump(int(days))
-            return self._send(200, data, "application/gzip", {"Content-Disposition": f'attachment; filename="{name}"'})
+            label = f"dump-{datetime.now():%Y%m%d-%H%M%S}"
+            return self._send_dump(*build_dump(label, dump_files(int(days)), {"days": int(days)}))
         if path.startswith("/api/runs/"):
             name = path[len("/api/runs/"):]
             if not ID_RE.match(name) or not name.endswith(".log"):
@@ -1040,6 +1047,13 @@ class Handler(BaseHTTPRequestHandler):
             if not 1 <= lineno <= len(lines):
                 return self._error(404, f"{lineno} 行目はありません（全 {len(lines)} 行）")
             return self._json({"line": lineno, "text": lines[lineno - 1]})
+        if path.startswith("/api/tasks/") and path.endswith("/dump"):
+            target = task_dir_of(path[len("/api/tasks/"):-len("/dump")])
+            if target is None:
+                return self._error(404, "タスクログがありません")
+            task_id = f"{target.parent.name}/{target.name}"
+            label = f"task-{target.parent.name}-{target.name}"
+            return self._send_dump(*build_dump(label, task_files(target), {"task": task_id}))
         if path.startswith("/api/tasks/"):
             target = task_dir_of(path[len("/api/tasks/"):])
             if target is None:

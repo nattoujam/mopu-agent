@@ -98,6 +98,10 @@ sub-issue 未マージや進行中 PR 過多でスキップしただけの実行
 「7 日」「30 日」「全部」のボタンで、その期間に始まったタスクとポーリングのログを `mopu-dump-<日時>-<コミット>.tar.gz` として保存する。
 `GET /api/dump?days=<日数>` でも取れる（`0` は全部）。
 
+タスク 1 件だけなら、タスクタブの詳細の「書き出し」で `logs/<owner>__<repo>/<task-id>/` だけを
+`mopu-task-<owner>__<repo>-<task-id>-<コミット>.tar.gz` として保存する（`GET /api/tasks/<owner>__<repo>/<task-id>/dump`）。
+秘密の置き換えと `dump.json` は全体の書き出しと同じ。
+
 | 含むもの | 含まないもの |
 |---|---|
 | `logs/<owner>__<repo>/<task-id>/`、`logs/console/`、`state/` の設定・コスト実績・計測・リポジトリごとの状態 | `state/secrets/`（GitHub App の鍵）、`state/askpass.sh`、作業ツリー、clone したリポジトリ |
