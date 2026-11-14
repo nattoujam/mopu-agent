@@ -773,7 +773,7 @@ run_task_body() {
   local pr_json pr_url pr_out pr_draft pr_ours=0 body_written=0 gate pr_body passed=0 ok=1
   gate_passed "$log_dir" && passed=1
   gate=$(ci_gate_report "$log_dir")
-  pr_body=$(printf 'Closes #%s\n\n%s\n\n%s---\n%s' "$number" "$result" "${gate:+## 検証$'\n\n'$gate$'\n\n'}" "$COMMENT_MARKER")
+  pr_body=$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")
   pr_json=$(gh pr view "$branch" -R "$REPO" --json url,isDraft,body 2>/dev/null)
   pr_url=$(jq -r '.url // empty' <<<"$pr_json" 2>/dev/null)
   pr_draft=$(jq -r '.isDraft // empty' <<<"$pr_json" 2>/dev/null)
@@ -835,11 +835,10 @@ run_task_body() {
   # 人が書いた PR へのコミットでは最終メッセージが本文に載らないため、返信に含めないと応答が消える
   local summary fallback=""
   (( body_written )) || fallback="${result:-（応答なし）}"
-  local gate_block="" no_split_block=""
-  [[ -n $gate ]] && gate_block="$gate"$'\n\n'
-  [[ -s $wt/$NO_SPLIT_FILE_NAME ]] && no_split_block="**分解しない理由**: $(<"$wt/$NO_SPLIT_FILE_NAME")"$'\n\n'
-  summary=$(printf '%s: %s\n\n**コミット**:\n%s\n\n%s%s推定コスト: $%s' \
-    "$headline" "$pr_url" "$(commit_subjects "$wt" "$head_before")" "$no_split_block" "$gate_block" "$(printf '%.2f' "$cost")")
+  summary="$headline: $pr_url"
+  [[ -s $wt/$NO_SPLIT_FILE_NAME ]] && summary+=$'\n\n'"分解しない理由: $(<"$wt/$NO_SPLIT_FILE_NAME")"
+  jq -e '.verdict == "passed" and .critic_verdict == "approve"' "$log_dir/ci-gate.json" >/dev/null 2>&1 \
+    || [[ -z $gate ]] || summary+=$'\n\n'"$gate"
   post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
 
   local pct_after=""

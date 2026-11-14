@@ -130,8 +130,3 @@ push_workspace() {
   use_github_app && push_env=(env "GIT_ASKPASS=$(app_git_askpass)" "GH_TOKEN=$GH_TOKEN")
   "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease
 }
-
-commit_subjects() {
-  local wt="$1" since="$2"
-  git -C "$wt" log --format='- %s' "$since..HEAD" 2>/dev/null
-}
