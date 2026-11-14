@@ -19,10 +19,8 @@ repo=$(repo_of_task_dir "$MOPU_TASK_DIR") || die "想定外のタスクディレ
 load_config "$repo" >/dev/null
 
 wt=$(workspace_repo "$(realpath -m -- "$MOPU_TASK_DIR")")
-if use_github_app; then
-  GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
-  export GH_TOKEN
-fi
+GH_TOKEN=$(app_token) || die "GitHub App の認証に失敗しました"
+export GH_TOKEN
 # gh pr view にブランチ名を渡すと、フォークから出た同名ブランチの PR も当たるため isCrossRepository を見る
 if [[ $MOPU_BRANCH != "$BRANCH_PREFIX"* ]]; then
   [[ $(gh pr view "$MOPU_BRANCH" -R "$REPO" --json state,isCrossRepository \

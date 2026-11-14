@@ -1134,7 +1134,7 @@ function renderApp(app, message) {
     $('deleteApp').onclick = deleteApp;
     return;
   }
-  box.innerHTML = `<div class="hint" style="margin:0 0 8px">未登録。gh の既存認証（あなた自身のアカウント）で投稿している。登録すると Issue コメントと PR が bot 名義になる。${app.key_without_app ? ' 前回の登録の秘密鍵だけが残っている。削除してから登録し直すこと。' : ''}</div>
+  box.innerHTML = `<div class="hint" style="margin:0 0 8px">未登録。登録するまでポーリングは動かない。${app.key_without_app ? ' 前回の登録の秘密鍵だけが残っている。削除してから登録し直すこと。' : ''}</div>
     <div class="field" data-field="app.app_id">
       <label for="f-app-id">App ID</label>
       <input type="text" id="f-app-id" inputmode="numeric" autocomplete="off">
@@ -1258,7 +1258,7 @@ async function deleteNotify() {
 }
 
 async function deleteApp() {
-  if (!confirm('GitHub App の登録と秘密鍵を削除します。次回のポーリングから gh の既存認証（あなた自身のアカウント）で投稿します。よろしいですか？')) return;
+  if (!confirm('GitHub App の登録と秘密鍵を削除します。登録し直すまでポーリングは動きません。よろしいですか？')) return;
   try {
     const app = await api('/api/github-app', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     renderApp(app, ['削除しました', 'ok']);

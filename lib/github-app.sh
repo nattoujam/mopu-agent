@@ -83,15 +83,7 @@ app_bot_identity() {
   APP_BOT_EMAIL="${uid}+${slug}[bot]@users.noreply.github.com"
 }
 
-use_github_app() {
-  [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]]
-}
-
-# App を使う場合、gh と git push の両方をこのトークンで通す
 setup_app_auth() {
-  use_github_app || return 0
-  [[ -f $APP_PRIVATE_KEY ]] || die "秘密鍵が見つかりません: $APP_PRIVATE_KEY"
-
   local tok
   tok=$(app_token) || die "GitHub App の認証に失敗しました"
   export GH_TOKEN="$tok"

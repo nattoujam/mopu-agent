@@ -126,7 +126,5 @@ verify_workspace() {
 push_workspace() {
   local wt="$1" branch="$2"
   verify_workspace "$wt" || { err "worktree の .git が書き換えられています: $wt"; return 1; }
-  local -a push_env=()
-  use_github_app && push_env=(env "GIT_ASKPASS=$(app_git_askpass)" "GH_TOKEN=$GH_TOKEN")
-  "${push_env[@]}" git -C "$wt" push --quiet -u origin "$branch" --force-with-lease
+  GIT_ASKPASS=$(app_git_askpass) git -C "$wt" push --quiet -u origin "$branch" --force-with-lease
 }

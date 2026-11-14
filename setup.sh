@@ -27,11 +27,7 @@ create_label() {
 setup_repo() {
   load_config "$1"
   log "対象リポジトリ: $REPO"
-  if use_github_app; then
-    setup_app_auth
-  else
-    log "GitHub App 未設定のため、あなた自身のアカウントで投稿します"
-  fi
+  setup_app_auth
   create_label "$LABEL_QUEUED"  "1d76db" "mopu-agent: 処理待ち"
   create_label "$LABEL_RUNNING" "fbca04" "mopu-agent: 実行中"
   create_label "$LABEL_AWAITING" "5319e7" "mopu-agent: 分解案の承認待ち"

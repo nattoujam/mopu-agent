@@ -210,14 +210,12 @@ load_global_config() {
   fi
   export CLAUDE_BIN
 
-  APP_PRIVATE_KEY=""
-  if [[ -n $APP_ID ]]; then
-    APP_PRIVATE_KEY="$APP_KEY_FILE"
-    [[ -f $APP_PRIVATE_KEY ]] \
-      || die "GitHub App の秘密鍵がありません。コンソールで App を削除して登録し直してください"
-    [[ $(stat -c %a "$APP_PRIVATE_KEY") == 600 ]] \
-      || die "秘密鍵の権限が 600 ではありません: $(agent_relpath "$APP_PRIVATE_KEY")"
-  fi
+  [[ -n $APP_ID ]] || die "GitHub App が登録されていません。コンソールの「設定」で登録してください"
+  APP_PRIVATE_KEY="$APP_KEY_FILE"
+  [[ -f $APP_PRIVATE_KEY ]] \
+    || die "GitHub App の秘密鍵がありません。コンソールで App を削除して登録し直してください"
+  [[ $(stat -c %a "$APP_PRIVATE_KEY") == 600 ]] \
+    || die "秘密鍵の権限が 600 ではありません: $(agent_relpath "$APP_PRIVATE_KEY")"
 
   AGENT_COMMIT="$(agent_commit)"
   SPEND_FILE="$STATE_DIR/spend.jsonl"

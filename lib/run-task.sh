@@ -322,7 +322,6 @@ build_system_prompt() {
       sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$p/container.md"
       jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS"
     fi
-    [[ -n $AGENT_GH_TOKEN ]] || { printf '\n'; cat "$p/no-gh.md"; }
 
     printf '\n'
     sed "s|%%BASE_BRANCH%%|$BASE_BRANCH|g" "$p/report.md"
@@ -343,8 +342,7 @@ build_agent_settings() {
   local wt="$task_dir/$REPO_SUBDIR"
 
   # permissions の Read は Read ツールに、sandbox の denyRead は Bash にしか効かない
-  local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state")
-  use_github_app && secret_paths+=("$APP_PRIVATE_KEY")
+  local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state" "$APP_PRIVATE_KEY")
   local secrets_json
   secrets_json=$(printf '%s\n' "${secret_paths[@]}" | jq -R . | jq -sc .)
   local tools="$AGENT_DIR/tools" admin
@@ -579,10 +577,10 @@ run_task_body() {
     fi
   fi
 
-  AGENT_GH_TOKEN=""
-  if use_github_app; then
-    AGENT_GH_TOKEN=$(app_token_with "$AGENT_TOKEN_PERMISSIONS") \
-      || warn "[$task_id] エージェント用トークンを取得できません。App に Actions: Read を付与すると CI の結果を読めます"
+  if ! AGENT_GH_TOKEN=$(app_token_with "$AGENT_TOKEN_PERMISSIONS"); then
+    fail_task "$task_id" "エージェント用のトークンを取得できませんでした。App に Actions: Read が付与されているか確認してください"
+    set_labels "$number" "$LABEL_FAILED"
+    return 1
   fi
 
   # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
