@@ -52,18 +52,26 @@ export type LearnComment = {
   path?: string;
 };
 
+export type LearnPr = {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  issue: number;
+  issue_title: string;
+  issue_body: string;
+  merge_commit: string;
+  merged_at: string;
+  comments: LearnComment[];
+};
+
 export type LearnTask = {
   kind: "learn";
   number: number;
   title: string;
   body: string;
   actor: string;
-  url: string;
-  issue: number;
-  issue_title: string;
-  issue_body: string;
-  merge_commit: string;
-  comments: LearnComment[];
+  prs: LearnPr[];
 };
 
 export type Task = LabeledTask | CommentTask | LearnTask;
@@ -284,20 +292,21 @@ export const handledPrs = (learned: string): Set<number> => {
   return done;
 };
 
-// 古い順に学ぶ。後の PR の差し戻しは、前の PR で学んだ基準を踏まえて読むほうが重複を避けやすい
-export const nextLearnSource = (
+export const LEARN_BATCH_SIZE = 3;
+
+export function nextLearnBatch(
   prs: MergedPr[],
   runs: SpendRun[],
   learned: string,
   repo: string,
   prefix: string,
-): MergedPr | null => {
+): MergedPr[] {
   const handled = handledPrs(learned);
   const pending = prs
-    .filter((pr) => pr.mergedAt && !handled.has(pr.number) && hasFollowups(pr, runs, repo, prefix))
+    .filter((pr) => pr.mergedAt && pr.mergeCommit && !handled.has(pr.number) && hasFollowups(pr, runs, repo, prefix))
     .sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt));
-  return pending[0] ?? null;
-};
+  return pending.length >= LEARN_BATCH_SIZE ? pending.slice(0, LEARN_BATCH_SIZE) : [];
+}
 
 
 const loadConfig = (): Config => {
@@ -614,8 +623,6 @@ const fetchLearnComments = (cfg: Config, pr: MergedPr, issue: number): LearnComm
   return rows.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
 };
 
-// 差し戻しがあってマージされた PR を、学習のタスクとして 1 件だけ返す。1 回のポーリングで
-// 何件も学ばせると、学習の Issue が一度に増えて読みきれないため
 const discoverLearnSource = (cfg: Config): void => {
   const spendFile = process.env.SPEND_FILE ?? "";
   const learnedFile = process.env.LEARNED_FILE ?? "";
@@ -636,22 +643,31 @@ const discoverLearnSource = (cfg: Config): void => {
     "number,title,body,url,headRefName,createdAt,mergedAt,mergeCommit",
   ]) ?? [];
   const learned = existsSync(learnedFile) ? readFileSync(learnedFile, "utf8") : "";
-  const pr = nextLearnSource(prs, readJsonLines<SpendRun>(spendFile), learned, cfg.repo, cfg.branchPrefix);
-  if (!pr?.mergeCommit) return;
-  const issue = branchToIssueNumber(pr.headRefName, cfg.branchPrefix) as number;
-  const meta = ghJson<{ title: string; body: string }>(["issue", "view", String(issue), "-R", cfg.repo, "--json", "title,body"]);
+  const batch = nextLearnBatch(prs, readJsonLines<SpendRun>(spendFile), learned, cfg.repo, cfg.branchPrefix);
+  if (batch.length === 0) return;
+  const learnPrs = batch.map((pr): LearnPr => {
+    const issue = branchToIssueNumber(pr.headRefName, cfg.branchPrefix) as number;
+    const meta = ghJson<{ title: string; body: string }>(["issue", "view", String(issue), "-R", cfg.repo, "--json", "title,body"]);
+    return {
+      number: pr.number,
+      title: chomp(pr.title),
+      body: chomp(pr.body ?? ""),
+      url: pr.url,
+      issue,
+      issue_title: chomp(meta?.title ?? ""),
+      issue_body: chomp(meta?.body ?? ""),
+      merge_commit: pr.mergeCommit?.oid ?? "",
+      merged_at: pr.mergedAt,
+      comments: fetchLearnComments(cfg, pr, issue),
+    };
+  });
   emit({
     kind: "learn",
-    number: pr.number,
-    title: chomp(pr.title),
-    body: chomp(pr.body ?? ""),
+    number: learnPrs[learnPrs.length - 1]?.number ?? 0,
+    title: `差し戻しの振り返り（${learnPrs.map((p) => `#${p.number}`).join(", ")}）`,
+    body: "",
     actor: "",
-    url: pr.url,
-    issue,
-    issue_title: chomp(meta?.title ?? ""),
-    issue_body: chomp(meta?.body ?? ""),
-    merge_commit: pr.mergeCommit.oid,
-    comments: fetchLearnComments(cfg, pr, issue),
+    prs: learnPrs,
   });
 };
 

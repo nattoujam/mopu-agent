@@ -11,7 +11,7 @@ CLAUDE_BIN=./tools/fake-agent FAKE_AGENT_TRIAGE=ask ./poll.sh --repo <owner/repo
 
 fake-agent でも、Issue の作成とラベルの操作は本物の GitHub に対して行う。`--repo` には検証用のリポジトリを指定する。
 
-学習と棚卸しは、`FAKE_AGENT_STRUCTURED` に返させる JSON を渡して確かめる。棚卸しは `LEARN_TIDY_CHARS=100` のように閾値を下げると走る。
+学習は、`FAKE_AGENT_STRUCTURED` に返させる JSON を渡して確かめる。
 
 ## Claude Code を更新したとき
 

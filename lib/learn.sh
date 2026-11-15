@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# 差し戻しのあった PR がマージされたら、そこから次に守る基準の案を作らせ、対象リポジトリに Issue として出す。
-# 基準を置く .claude/rules/ は Claude Code の保護パスで、エージェントの権限では書けないため、置くのは人間に任せる
 
-# lib/project-memory.sh の上限（PROJECT_MEMORY_MAX_CHARS）の半分。上限に届くと載らない指示が出るため、その手前で棚卸しする
-LEARN_TIDY_CHARS="${LEARN_TIDY_CHARS:-30000}"
 LEARN_KNOWN_MAX_CHARS=20000
 LEARN_MAX_ISSUES=3
+LEARN_ACTIONS_MAX_BYTES=200000
 LEARN_ISSUE_URLS=""
 
 learn_issues_file() { printf '%s/learn-issues.txt' "$REPO_STATE_DIR"; }
-learn_tidy_file() { printf '%s/learn-tidy' "$REPO_STATE_DIR"; }
 
 # PR の head は、マージ後にブランチが消されても refs/pull/<n>/head に残る。refs/remotes の
 # 下に置くと ensure_repo の fetch --prune に消されるので、別の名前空間に取る
@@ -17,74 +13,102 @@ fetch_pr_head() {
   git -C "$REPO_DIR" fetch --quiet origin "+refs/pull/$1/head:refs/mopu/pr/$1"
 }
 
-learn_memory_hash() {
-  project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH" | sha1sum | cut -d' ' -f1
-}
-
-# 指示が閾値を超えていて、前回の棚卸しから中身が変わっていれば棚卸しする。棚卸しの Issue が
-# 閉じられたときに、同じ中身のまま出し直さないため
-tidy_task() {
-  local chars
-  chars=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH" | wc -m)
-  (( chars > LEARN_TIDY_CHARS )) || return 0
-  [[ $(learn_memory_hash) != "$(cat "$(learn_tidy_file)" 2>/dev/null)" ]] || return 0
-  jq -nc --argjson c "$chars" '{kind: "tidy", number: 0, title: "判断の基準の棚卸し", body: "", actor: "", chars: $c}'
-}
-
 learn_tasks() {
   [[ ${LEARN_ENABLED:-false} == true ]] || return 0
   ensure_repo
-  local t
-  t=$(discover learn-source)
-  if [[ -n $t ]]; then
-    printf '%s\n' "$t"
-    return 0
-  fi
-  tidy_task
+  discover learn-source
 }
 
 mark_learned() {
-  printf '%s\t%s\n' "$1" "$2" >> "$LEARNED_FILE"
+  jq -r --arg s "$2" '.prs[] | "\(.number)\t\($s)"' <<<"$1" >> "$LEARNED_FILE"
+}
+
+summarize_actions() {
+  jq -r '
+    def clip($n): if length > $n then .[:$n] + "…" else . end;
+    if .type == "system" and .subtype == "init" then "--- エージェントの呼び出し ---"
+    elif .type == "assistant" then
+      .message.content[]?
+      | if .type == "text" then "[発言] " + (.text | clip(2000))
+        elif .type == "thinking" and (.thinking // "") != "" then "[思考] " + (.thinking | clip(2000))
+        elif .type == "tool_use" then
+          "[\(.name)] " + (.input | (.command // .file_path // .pattern // .url // .query // tojson) | tostring | clip(300))
+        else empty end
+    elif .type == "user" then
+      .message.content[]?
+      | select(type == "object" and .type == "tool_result" and .is_error == true)
+      | "[エラー] " + (.content | if type == "string" then . else map(.text? // "") | join("") end | clip(300))
+    else empty end' "$1" 2>/dev/null
+}
+
+write_action_logs() {
+  local pr="$1" out_dir="$2" issue merged_stamp dir name
+  issue=$(jq -r '.issue' <<<"$pr")
+  merged_stamp=$(date -d "$(jq -r '.merged_at' <<<"$pr")" +%Y%m%d-%H%M%S) || return 1
+  mkdir -p "$out_dir"
+  while IFS= read -r dir; do
+    name=${dir##*/}
+    [[ ${name: -15} > $merged_stamp ]] && continue
+    [[ -s $dir/stream.jsonl ]] || continue
+    summarize_actions "$dir/stream.jsonl" | head -c "$LEARN_ACTIONS_MAX_BYTES" > "$out_dir/$name.md"
+    printf '%s\n' "$out_dir/$name.md"
+  done < <(find "$TASK_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d \( -name "issue-$issue-*" -o -name "comment-$issue-*" \) 2>/dev/null \
+             | sed -E 's/.*-([0-9]{8}-[0-9]{6})$/\1 &/' | sort | cut -d' ' -f2-)
 }
 
 build_learn_prompt() {
-  local t="$1" n i
+  local t="$1" actions_dir="$2" n i j pr count
+  local -a logs
+  n=$(jq '.prs | length' <<<"$t")
   {
     echo "# タスク"
     echo
-    jq -r '"マージされた PR #\(.number)「\(.title)」（\(.url)）では、エージェントが出した変更に人間が差し戻しを付けた。差し戻しから、次から守る判断の基準の案を出すこと。"' <<<"$t"
-    echo
-    jq -r '"## 元の Issue #\(.issue)「\(.issue_title)」"' <<<"$t"
-    echo
-    echo '```'
-    jq -r '.issue_body | if . == "" then "(本文なし)" else . end' <<<"$t"
-    echo '```'
-    echo
-    echo "## PR の本文"
-    echo
-    echo '```'
-    jq -r '.body | if . == "" then "(本文なし)" else . end' <<<"$t"
-    echo '```'
-    echo
-    echo "## 差し戻しのコメント（古い順）"
-    n=$(jq '.comments | length' <<<"$t")
-    for (( i = 0; i < n; i++ )); do
+    echo "差し戻しのあった次の $n 件の PR がマージされた。これらのタスクでのエージェントの行動を振り返り、対象リポジトリの指示の変更案を出すこと。"
+    for (( j = 0; j < n; j++ )); do
+      pr=$(jq -c --argjson j "$j" '.prs[$j]' <<<"$t")
       echo
-      jq -r --argjson i "$i" '.comments[$i] | "### \(.created_at) \(.actor)\(if .path then "（\(.path) への行コメント）" else "" end)\n\n\(.url)"' <<<"$t"
+      jq -r '"## PR #\(.number)「\(.title)」（\(.url)）"' <<<"$pr"
+      echo
+      jq -r '"### 元の Issue #\(.issue)「\(.issue_title)」"' <<<"$pr"
       echo
       echo '```'
-      jq -r --argjson i "$i" '.comments[$i].instruction' <<<"$t"
+      jq -r '.issue_body | if . == "" then "(本文なし)" else . end' <<<"$pr"
       echo '```'
+      echo
+      echo "### PR の本文"
+      echo
+      echo '```'
+      jq -r '.body | if . == "" then "(本文なし)" else . end' <<<"$pr"
+      echo '```'
+      echo
+      echo "### 差し戻しのコメント（古い順）"
+      count=$(jq '.comments | length' <<<"$pr")
+      for (( i = 0; i < count; i++ )); do
+        echo
+        jq -r --argjson i "$i" '.comments[$i] | "#### \(.created_at) \(.actor)\(if .path then "（\(.path) への行コメント）" else "" end)\n\n\(.url)"' <<<"$pr"
+        echo
+        echo '```'
+        jq -r --argjson i "$i" '.comments[$i].instruction' <<<"$pr"
+        echo '```'
+      done
+      (( count )) || { echo; echo "（コメントを取得できなかった。コミットの前後から読み取ること）"; }
+      echo
+      echo "### PR のコミット"
+      echo
+      jq -r '"`git log --reverse --format=fuller -p \(.merge_commit)^1..refs/mopu/pr/\(.number)` で、この PR のコミットを古い順に読める。コミットの日時を上のコメントの日時と突き合わせると、差し戻しの前後で何が変わったかが分かる。"' <<<"$pr"
+      echo
+      echo "### エージェントの行動ログ（古い順）"
+      echo
+      mapfile -t logs < <(write_action_logs "$pr" "$actions_dir/$(jq -r '.number' <<<"$pr")")
+      if (( ${#logs[@]} )); then
+        printf -- '- %s\n' "${logs[@]}"
+      else
+        echo "（残っていない。コミットの順から推すこと）"
+      fi
     done
-    (( n )) || { echo; echo "（コメントを取得できなかった。コミットの前後から読み取ること）"; }
-    echo
-    echo "## PR のコミット"
-    echo
-    jq -r '"`git log --reverse --format=fuller -p \(.merge_commit)^1..refs/mopu/pr/\(.number)` で、この PR のコミットを古い順に読める。コミットの日時を上のコメントの日時と突き合わせると、差し戻しの前後で何が変わったかが分かる。"' <<<"$t"
   } | head -c 60000
 }
 
-# 対応済み（completed）で閉じた案は、基準として対象リポジトリの指示に入っているので載せない
 build_known_issues_context() {
   local file numbers
   file=$(learn_issues_file)
@@ -92,12 +116,12 @@ build_known_issues_context() {
   numbers=$(cut -f1 "$file" | jq -Rsc 'split("\n") | map(select(. != "") | tonumber)')
   gh issue list -R "$REPO" --state all --limit 500 --json number,title,body,state,stateReason 2>/dev/null \
     | jq -r --argjson ns "$numbers" '
-        map(select(.number as $n | $ns | index($n)) | select(.state == "OPEN" or .stateReason != "COMPLETED"))
+        map(select(.number as $n | $ns | index($n)))
         | sort_by(.number) | reverse
         | if length == 0 then empty else
-            "### 既に出した案\n\n次の案は、Issue として人間の対応を待っているか、人間が採らないと決めて閉じた。同じ趣旨の案は出さないこと。\n"
-            + (map((.body | rindex("\n\n---\n")) as $i
-                   | "\n#### #\(.number)「\(.title)」（\(if .state == "OPEN" then "対応待ち" else "却下" end)）\n\n\(if $i then .body[:$i] else .body end | .[:2000])")
+            "### これまでに出した案（新しい順）\n"
+            + (map("\n#### #\(.number)「\(.title)」（\(if .state == "OPEN" then "対応待ち" elif .stateReason == "COMPLETED" then "採用" else "却下" end)）\n\n"
+                   + (.body | split("\n\n---\n")[0] | split("<details>")[0] | .[:1500]))
                | join("\n"))
           end' \
     | head -c "$LEARN_KNOWN_MAX_CHARS"
@@ -122,10 +146,11 @@ learn_schema() {
 # 学習のエージェントには読むことしかさせない。書き込みの許可、ホスト側のコマンド、
 # フェーズの Stop hook を外す
 learn_agent_settings() {
-  local task_dir="$1" out="$2"
+  local task_dir="$1" out="$2" actions_dir="$3"
   build_agent_settings "$task_dir" "$out.base" || return 1
-  jq --arg tools "$AGENT_DIR/tools" \
-    '.permissions.allow |= map(select((startswith("Edit(") or contains($tools)) | not))
+  jq --arg tools "$AGENT_DIR/tools" --arg actions "$actions_dir" \
+    '.permissions.allow |= (map(select((startswith("Edit(") or contains($tools)) | not))
+                            + ["Read(\($actions | sub("^/"; "//"))/**)"])
      | .sandbox.excludedCommands = []
      | .sandbox.filesystem.allowWrite = []
      | del(.hooks.Stop)' "$out.base" > "$out" || return 1
@@ -147,14 +172,12 @@ publish_learn_issues() {
   done
 }
 
-# run_learn_task_body の local の task_id / kind / number / title / cost / pct_before / task_dir を読むため、その中からしか呼べない。
-# 学習の失敗は数え、上限まで次のポーリングでやり直す。棚卸しは指示の中身が変わるまで出し直さない
+# run_learn_task_body の local の t / task_id / title / cost / pct_before / task_dir を読むため、その中からしか呼べない
 learn_failed() {
   err "[$task_id] $1"
   record_outcome false "$1"
   notify "❌ **失敗** $(issue_ref "$REPO") $title"$'\n'"\`$task_id\`"$'\n'"$(md_quote "$1")"
-  [[ $kind == learn ]] && mark_learned "$number" failed
-  [[ $kind == tidy ]] && learn_memory_hash > "$(learn_tidy_file)"
+  mark_learned "$t" failed
   record_spend "$task_id" "${cost:-0}" "$pct_before" "" failed
   [[ -d $task_dir ]] && log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
   return 1
@@ -166,7 +189,7 @@ record_outcome() {
     '{ok: $ok} + (if $reason == "" then {} else {reason: $reason} end)' > "$TASK_OUTCOME_FILE"
 }
 
-# 使い方: run_learn_task（CURRENT_TASK_JSON に learn / tidy のタスク）
+# 使い方: run_learn_task（CURRENT_TASK_JSON に learn のタスク）
 run_learn_task() {
   local rc=0
   TASK_OUTCOME_FILE=""
@@ -179,13 +202,14 @@ run_learn_task() {
 }
 
 run_learn_task_body() {
-  local t="$CURRENT_TASK_JSON" kind number title task_id task_dir wt log_dir
-  kind=$(jq -r '.kind' <<<"$t")
+  local t="$CURRENT_TASK_JSON" number title task_id task_dir wt log_dir actions_dir pr_numbers n
   number=$(jq -r '.number' <<<"$t")
   title=$(jq -r '.title' <<<"$t")
-  task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
+  pr_numbers=$(jq -r '.prs[].number' <<<"$t")
+  task_id="learn-${number}-$(date +%Y%m%d-%H%M%S)"
   task_dir="$WORKTREES_DIR/$task_id"
   wt=$(workspace_repo "$task_dir")
+  actions_dir="$task_dir/actions"
   log_dir="$TASK_LOGS_DIR/$task_id"
   mkdir -p "$log_dir"
   TASK_OUTCOME_FILE="$log_dir/outcome.json"
@@ -195,27 +219,24 @@ run_learn_task_body() {
   local pct_before="$USAGE_5H" cost=0
   [[ -z $pct_before ]] && parse_usage "$(fetch_usage)" && pct_before="$USAGE_5H"
 
-  log "[$task_id] 開始: ${title}$([[ $kind == learn ]] && printf '（#%s）' "$number")"
+  log "[$task_id] 開始: $title"
 
-  if [[ $kind == learn ]] && ! fetch_pr_head "$number"; then
-    learn_failed "PR #$number の head を取得できませんでした"
-    return 1
-  fi
+  for n in $pr_numbers; do
+    if ! fetch_pr_head "$n"; then
+      learn_failed "PR #$n の head を取得できませんでした"
+      return 1
+    fi
+  done
   # 案は、マージ後に積まれた変更も含めた今のベースブランチに合わせて書かせる
   if ! { mkdir -p "$task_dir" && git -C "$REPO_DIR" worktree add --quiet --detach "$wt" "origin/$BASE_BRANCH"; }; then
     learn_failed "worktree の準備に失敗しました"
     return 1
   fi
 
-  local sys_prompt
-  if [[ $kind == learn ]]; then
-    sys_prompt=$(cat "$AGENT_DIR/prompts/learn.md")
-    local known
-    known=$(build_known_issues_context)
-    [[ -n $known ]] && sys_prompt+=$'\n\n'"$known"
-  else
-    sys_prompt=$(sed -e "s/%%CHARS%%/$LEARN_TIDY_CHARS/g" "$AGENT_DIR/prompts/tidy.md")
-  fi
+  local sys_prompt known
+  sys_prompt=$(cat "$AGENT_DIR/prompts/learn.md")
+  known=$(build_known_issues_context)
+  [[ -n $known ]] && sys_prompt+=$'\n\n'"$known"
   sys_prompt+=$'\n\n'"$(cat "$AGENT_DIR/prompts/read-only.md")"
 
   local memory
@@ -226,14 +247,10 @@ run_learn_task_body() {
   fi
 
   local prompt
-  if [[ $kind == learn ]]; then
-    prompt=$(build_learn_prompt "$t")
-  else
-    prompt="# タスク"$'\n\n'"対象リポジトリの指示が $(jq -r '.chars' <<<"$t") 文字になった。\`.claude/rules/\` の棚卸しの案を出すこと。"
-  fi
+  prompt=$(build_learn_prompt "$t" "$actions_dir")
 
   local settings="$log_dir/settings.json"
-  learn_agent_settings "$task_dir" "$settings" || { learn_failed "エージェントの設定を作れませんでした"; return 1; }
+  learn_agent_settings "$task_dir" "$settings" "$actions_dir" || { learn_failed "エージェントの設定を作れませんでした"; return 1; }
 
   local rc=0
   # shellcheck disable=SC2034  # invoke_agent が読む
@@ -277,28 +294,20 @@ run_learn_task_body() {
 
   if (( $(jq '.issues | length' <<<"$issues") == 0 )); then
     log "[$task_id] 案にするものはありませんでした"
-    [[ $kind == learn ]] && mark_learned "$number" no-change
-    [[ $kind == tidy ]] && learn_memory_hash > "$(learn_tidy_file)"
+    mark_learned "$t" no-change
     record_spend "$task_id" "$cost" "$pct_before" "" no-change
     remove_workspace "$task_dir"
     return 0
   fi
 
-  local footer source
-  if [[ $kind == learn ]]; then
-    footer=$(jq -r '"#\(.number)（\(.url)）の差し戻しから、mopu-agent が出した案です。"' <<<"$t")
-    source="$number"
-  else
-    footer="対象リポジトリの指示の棚卸しとして、mopu-agent が出した案です。"
-    source=tidy
-  fi
-  if ! publish_learn_issues "$issues" "$footer" "$source"; then
+  local footer
+  footer=$(jq -r '"\(.prs | map("#\(.number)") | join("・")) の差し戻しを振り返って、mopu-agent が出した案です。"' <<<"$t")
+  if ! publish_learn_issues "$issues" "$footer" "$(paste -sd, <<<"$pr_numbers")"; then
     learn_failed "Issue を作れませんでした${LEARN_ISSUE_URLS:+（作れたもの: $LEARN_ISSUE_URLS）}"
     return 1
   fi
 
-  [[ $kind == learn ]] && mark_learned "$number" issue
-  [[ $kind == tidy ]] && learn_memory_hash > "$(learn_tidy_file)"
+  mark_learned "$t" issue
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
   record_spend "$task_id" "$cost" "$pct_before" "$pct_after" issue

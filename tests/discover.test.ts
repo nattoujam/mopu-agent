@@ -11,7 +11,7 @@ import {
   isAllowedActor,
   issueNumberFromUrl,
   isTriggerLine,
-  nextLearnSource,
+  nextLearnBatch,
   parseRun,
   selectHistory,
   sortComments,
@@ -284,14 +284,23 @@ describe("handledPrs", () => {
   });
 });
 
-describe("nextLearnSource", () => {
-  const runs = [run("comment-12-20260901-120000"), run("comment-14-20260905-120000")];
+describe("nextLearnBatch", () => {
+  const runs = [
+    run("comment-12-20260901-120000"),
+    run("comment-14-20260905-120000"),
+    run("comment-16-20260907-120000"),
+    run("comment-17-20260908-120000"),
+  ];
   const a = pr(40, 12, "2026-09-01T02:00:00Z", "2026-09-06T00:00:00Z");
   const b = pr(41, 14, "2026-09-05T02:00:00Z", "2026-09-05T12:00:00Z");
-  const c = pr(42, 15, "2026-09-05T02:00:00Z", "2026-09-05T06:00:00Z");
-  it("差し戻しのあった PR のうち、マージが古いものから返す", () =>
-    strictEqual(nextLearnSource([a, b, c], runs, "", REPO, P)?.number, 41));
+  const noFollowup = pr(42, 15, "2026-09-05T02:00:00Z", "2026-09-05T06:00:00Z");
+  const c = pr(43, 16, "2026-09-07T02:00:00Z", "2026-09-07T18:00:00Z");
+  const d = pr(44, 17, "2026-09-08T02:00:00Z", "2026-09-08T18:00:00Z");
+  const numbers = (prs: MergedPr[]): number[] => prs.map((p) => p.number);
+  it("差し戻しのあった PR を、マージが古いものから決まった件数だけ返す", () =>
+    deepStrictEqual(numbers(nextLearnBatch([d, c, noFollowup, b, a], runs, "", REPO, P)), [41, 40, 43]));
   it("済みの PR は飛ばす", () =>
-    strictEqual(nextLearnSource([a, b, c], runs, "41\tpr\n", REPO, P)?.number, 40));
-  it("無ければ null", () => strictEqual(nextLearnSource([a, b, c], runs, "40\tpr\n41\tpr\n", REPO, P), null));
+    deepStrictEqual(numbers(nextLearnBatch([a, b, c, d], runs, "41\tissue\n", REPO, P)), [40, 43, 44]));
+  it("件数に満たなければ空", () =>
+    deepStrictEqual(nextLearnBatch([a, b, c, d], runs, "40\tissue\n41\tissue\n", REPO, P), []));
 });

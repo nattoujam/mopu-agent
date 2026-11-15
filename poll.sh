@@ -256,13 +256,12 @@ log "$(wc -l <<<"$tasks") 件のタスクを検出しました"
 
 if (( DRY_RUN )); then
   while IFS= read -r t; do
-    line=$(jq -r 'if .kind == "learn" then "  [learn] #\(.number) \(.title)  ← 差し戻し \(.comments | length) 件から基準を学ぶ"
-                  elif .kind == "tidy" then "  [tidy] \(.title)  ← 指示が \(.chars) 文字"
+    line=$(jq -r 'if .kind == "learn" then "  [learn] \(.title)  ← 差し戻し \([.prs[].comments | length] | add) 件の行動を振り返る"
                   else "  [\(.kind)] #\(.number) \(.title)  (by \(.actor))"
                   + (if ((.comments // []) | length) > 1
                      then "  ← コメント \(.comments | length) 件をまとめて処理"
                      else "" end) end' <<<"$t")
-    if [[ $(jq -r '.kind' <<<"$t") == learn || $(jq -r '.kind' <<<"$t") == tidy ]]; then
+    if [[ $(jq -r '.kind' <<<"$t") == learn ]]; then
       :
     elif is_approve_task "$t" >/dev/null; then
       line+="  ← 分解案の承認（エージェントは起動しない）"
@@ -294,7 +293,7 @@ while IFS= read -r t <&3; do
   # 学習のタスクは mopu-agent 自身が作るので、発行者・進行中 PR・sub-issue の判定を通さない。
   # 対象の PR は learned-prs.txt で管理するので、打ち切っても last-poll には関わらない
   kind=$(jq -r '.kind' <<<"$t")
-  if [[ $kind == learn || $kind == tidy ]]; then
+  if [[ $kind == learn ]]; then
     gate || { log "利用枠のため以降のタスクを中止します"; STOP_ALL=1; break; }
     ensure_repo
     CURRENT_TASK_JSON="$t"
