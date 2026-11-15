@@ -30,7 +30,7 @@ usage() {
   --dry-run           検出したタスクを表示するだけで実行しない
   --ignore-budget     利用枠のゲートを無視して実行する
   --task <番号>       指定した Issue 番号だけを処理する（ラベル不要）
-  --retry <番号>      前回失敗したタスクの作業ツリーを引き継いで再開する
+  --retry <番号>      その Issue の前回のタスクを、失敗した state からやり直す
   -h, --help          このヘルプ
 
 リポジトリが複数あるとき、--task と --retry には --repo が必要。
@@ -135,6 +135,8 @@ source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"
 source "$AGENT_DIR/lib/plan.sh"
 source "$AGENT_DIR/lib/project-memory.sh"
+source "$AGENT_DIR/lib/outcome.sh"
+source "$AGENT_DIR/lib/verify.sh"
 source "$AGENT_DIR/lib/run-task.sh"
 source "$AGENT_DIR/lib/learn.sh"
 # タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
@@ -158,6 +160,7 @@ if [[ -n $ONLY_TASK ]] && (( MAX_OPEN_AGENT_PRS > 0 )); then
   MAX_OPEN_AGENT_PRS=0
 fi
 
+cleanup_merged
 close_completed_parents
 
 OPEN_AGENT_BRANCHES=()
@@ -225,7 +228,7 @@ tasks=""
 POLL_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if [[ -n $ONLY_TASK ]]; then
-  if (( RETRY )) && tasks=$(load_leftover_task "$ONLY_TASK"); then
+  if (( RETRY )) && tasks=$(load_failed_task "$ONLY_TASK"); then
     log "前回のタスクを引き継ぎます: $(jq -r '"[\(.kind)] #\(.number) \(.title)"' <<<"$tasks")"
   else
     tasks=$(gh issue view "$ONLY_TASK" -R "$REPO" --json number,title,body,author \
@@ -336,7 +339,7 @@ while IFS= read -r t <&3; do
   body=$(jq -r '.body' <<<"$t")
 
   ensure_repo
-  # shellcheck disable=SC2034  # run-task.sh が --retry 用の控えとして書き出す
+  # shellcheck disable=SC2034  # run-task.sh が読む
   CURRENT_TASK_JSON="$t"
   run_task "$kind" "$number" "$title" "$body"
   branch=$(task_branch "$t" "$number")

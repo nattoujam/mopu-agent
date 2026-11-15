@@ -260,7 +260,33 @@ dl.fields dd {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.phases { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 11px; }
+.badge.wait { color: var(--warn); border-color: rgba(232,194,106,.45); }
+.sm { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 0 0 12px; padding: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.sm-phase { width: 100%; max-width: 560px; border: 1px dashed var(--line); border-radius: 8px; padding: 6px 8px 8px; }
+.sm-phase.fail { border-color: rgba(239,122,122,.6); }
+.sm-phase-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.sm-states { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.sm-state { position: relative; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); font-size: 12.5px; text-align: center; background: var(--panel); }
+.sm-state .sm-by { display: block; font-size: 10px; color: var(--muted); }
+.sm-state .sm-count { margin-left: 4px; font-size: 11px; color: var(--muted); }
+.sm-state.done { border-color: rgba(78,201,138,.6); background: rgba(78,201,138,.10); }
+.sm-state.run { border-color: var(--accent); background: rgba(110,168,254,.15); animation: sm-pulse 1.6s ease-in-out infinite; }
+.sm-state.fail { border-color: var(--err); background: rgba(239,122,122,.15); }
+.sm-state.idle { opacity: .45; }
+@keyframes sm-pulse { 50% { background: rgba(110,168,254,.04); } }
+.sm-arrow { color: var(--muted); font-size: 12px; line-height: 1.2; }
+.sm-end { padding: 4px 14px; border-radius: 999px; border: 1px solid var(--line); font-size: 12.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-end.ok { color: var(--ok); border-color: rgba(78,201,138,.5); }
+.sm-end.err { color: var(--err); border-color: rgba(239,122,122,.5); }
+.sm-end.wait { color: var(--warn); border-color: rgba(232,194,106,.5); }
+.sm-end.run { color: var(--accent); border-color: rgba(110,168,254,.5); }
+.history { margin: 0 0 12px; font-size: 12.5px; }
+.history summary { cursor: pointer; color: var(--muted); }
+.history table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.history th, .history td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.history td.num { color: var(--muted); font-family: var(--mono); }
+.history td.detail { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+.event-divider { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: var(--accent); }
 .detail-actions { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; align-items: center; }
 .detail-actions .hint { margin: 0 auto 0 0; }
 .detail-actions button { padding: 4px 10px; font-size: 12px; }
@@ -420,16 +446,80 @@ function fmtClock(epoch) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-// phases.jsonl のフェーズ名。終わりの状態もフェーズとして最後の行に入る
-const PHASE_LABELS = {
-  prepare: '準備', triage: '把握', implement: '実装', verify: '検証', publish: '公開',
-  review: 'レビュー待ち', 'awaiting-input': '回答待ち', 'awaiting-approval': '承認待ち', answered: '回答済み', failed: '失敗',
-};
-const PHASE_CLASS = { review: 'ok', answered: 'ok', failed: 'err' };
-function phaseBadge(phase, detail, at) {
-  const label = (PHASE_LABELS[phase] || phase) + (detail ? `（${detail}）` : '');
-  const when = at ? ' ' + fmtClock(Date.parse(at) / 1000) : '';
-  return `<span class="badge ${PHASE_CLASS[phase] || 'run'}">${esc(label + when)}</span>`;
+// state の一覧は lib/states.json。phases.jsonl の各行は state か終わりの状態で、
+// 検証の中の段階は phase が verify、detail が push / ci / critic / fix になる
+let STATES = null;
+async function loadStates() {
+  try { STATES = await api('/api/states'); } catch (e) { STATES = null; }
+}
+function stateKey(p) {
+  return p.phase === 'verify' && ['push', 'ci', 'critic', 'fix'].includes(p.detail) ? `verify:${p.detail}` : p.phase;
+}
+function stateLabel(key) {
+  if (!STATES) return key;
+  if (STATES.ends[key]) return STATES.ends[key].label;
+  for (const ph of STATES.phases) {
+    const st = ph.states.find((s) => s.id === key);
+    if (st) return st.id.startsWith('triage-') ? `把握: ${st.label}` : st.label;
+  }
+  return key;
+}
+const END_CLASS = { ok: 'ok', err: 'err', wait: 'wait' };
+function phaseBadge(phase, detail) {
+  const p = { phase, detail };
+  const tone = STATES && STATES.ends[phase] ? STATES.ends[phase].tone : 'run';
+  const extra = detail && stateKey(p) === phase && phase !== 'failed' ? `（${detail}）` : '';
+  return `<span class="badge ${END_CLASS[tone] || 'run'}">${esc(stateLabel(stateKey(p)) + extra)}</span>`;
+}
+
+// Step Functions の実行画面にならい、state machine の図に、通った state・実行中の state・失敗した state を色で重ねる
+function renderMachine(data) {
+  if (!STATES || !data.phases.length) return '';
+  const phases = data.phases;
+  const s = data.summary;
+  const visits = {};
+  phases.forEach((p) => { const k = stateKey(p); visits[k] = (visits[k] || 0) + 1; });
+  const last = phases[phases.length - 1];
+  const endId = STATES.ends[last.phase] ? last.phase : null;
+  const running = !endId ? stateKey(last) : null;
+  let failedKey = null;
+  if (endId === 'failed' && s.failed_state !== 'verify') {
+    for (let i = phases.length - 2; i >= 0; i--) {
+      if (!STATES.ends[phases[i].phase]) { failedKey = stateKey(phases[i]); break; }
+    }
+  }
+  const groups = STATES.phases.map((ph) => {
+    const isTriage = ph.states[0].id.startsWith('triage-');
+    const shown = isTriage ? ph.states.filter((st) => visits[st.id]) : ph.states;
+    const cells = (shown.length ? shown : ph.states.slice(0, 1)).map((st) => {
+      const n = visits[st.id] || 0;
+      const cls = st.id === failedKey ? 'fail' : st.id === running ? 'run' : n ? 'done' : 'idle';
+      return `<div class="sm-state ${cls}" title="${esc(st.id)}">
+        <span class="sm-by">${st.by === 'llm' ? 'LLM' : 'コード'}</span>${esc(isTriage && !n ? '把握' : st.label)}${n > 1 ? `<span class="sm-count">×${n}</span>` : ''}
+      </div>`;
+    }).join('');
+    const verifyFailed = s.failed_state === 'verify' && ph.states[0].id.startsWith('verify:');
+    return `<div class="sm-phase ${verifyFailed ? 'fail' : ''}"><div class="sm-phase-label">${esc(ph.label)}${verifyFailed ? '（未完了）' : ''}</div><div class="sm-states">${cells}</div></div>`;
+  });
+  const end = endId
+    ? `<div class="sm-end ${END_CLASS[STATES.ends[endId].tone] || ''}">${esc(STATES.ends[endId].label)}${last.detail ? ` · ${esc(last.detail.split('\n')[0])}` : ''}</div>`
+    : '<div class="sm-end run">実行中</div>';
+  return `<div class="sm">${groups.join('<div class="sm-arrow">↓</div>')}<div class="sm-arrow">↓</div>${end}</div>`;
+}
+
+function renderHistory(phases) {
+  if (!phases.length) return '';
+  let prev = null;
+  const rows = phases.map((p) => {
+    const t = Date.parse(p.at) / 1000;
+    const delta = prev != null ? `+${Math.round(t - prev)}s` : '';
+    prev = t;
+    const detail = stateKey(p) === p.phase ? (p.detail || '') : '';
+    return `<tr><td>${esc(fmtClock(t))}:${esc(String(new Date(t * 1000).getSeconds()).padStart(2, '0'))}</td><td class="num">${esc(delta)}</td>
+      <td>${esc(stateLabel(stateKey(p)))}</td><td class="detail">${esc(detail)}</td></tr>`;
+  }).join('');
+  return `<details class="history"><summary>イベント履歴（${phases.length} 件）</summary>
+    <table><thead><tr><th>時刻</th><th>経過</th><th>state</th><th>詳細</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -735,8 +825,9 @@ async function openTask(id) {
       <button data-dump>書き出し</button>
       ${retryable(s) ? `<button data-retry="${s.number}" data-retry-repo="${esc(s.repo)}">再実行</button>` : ''}
     </div>
-    ${data.phases.length ? `<div class="phases">${data.phases.map((p) => phaseBadge(p.phase, p.detail, p.at)).join('<span>→</span>')}</div>` : ''}
     ${s.failure ? `<div class="msg err" style="margin:0 0 12px">${esc(s.failure)}</div>` : ''}
+    ${renderMachine(data)}
+    ${renderHistory(data.phases)}
     ${events || '<div class="empty">イベントがありません</div>'}`;
   pane.querySelectorAll('[data-raw]').forEach((el) => {
     el.onclick = () => showRaw(id, el.dataset.raw);
@@ -759,6 +850,7 @@ function eventHead(e) {
 }
 
 function renderEvent(e) {
+  if (e.kind === 'mopu_state') return `<div class="event-divider">▶ ${esc(e.text)}</div>`;
   const cls = e.is_error ? 'err' : e.role;
   const body = e.fields && e.fields.length
     ? `<dl class="fields">${e.fields.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`
@@ -1268,8 +1360,7 @@ async function deleteApp() {
   }
 }
 
-
-refresh();
+loadStates().then(refresh);
 setInterval(refresh, 2000);
 setInterval(tick, 1000);
 </script>

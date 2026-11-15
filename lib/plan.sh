@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
 
-PLAN_FILE_NAME='.mopu-agent-plan.json'
 PLAN_MARKER='<!-- mopu-agent:plan -->'
 PLAN_APPROVED_MARKER='<!-- mopu-agent:plan-approved -->'
+PLAN_WITHDRAWN_MARKER='<!-- mopu-agent:plan-withdrawn -->'
 APPROVE_WORD='approve'
-
-# 分解で生まれた Issue を再分解させないための判定。本文のマーカーは自分で
-# 埋めるので確実に効き、parent_issue_url は GitHub 上で手動で紐付けられた
-# sub issue も拾える。親のない Issue ではこのキー自体が存在しない
-is_sub_issue() {
-  local number="$1" body="$2"
-  [[ $body == *"$SUB_ISSUE_MARKER"* ]] && return 0
-  [[ -n $(gh api "repos/$REPO/issues/$number" --jq '.parent_issue_url // empty' 2>/dev/null) ]]
-}
 
 validate_plan() {
   jq -e --argjson max "$MAX_SUB_ISSUES" '
@@ -76,32 +67,16 @@ render_plan_comment() {
     "$(jq . "$plan")" "$PLAN_MARKER"
 }
 
-propose_plan() {
-  local task_id="$1" number="$2" plan="$3" cost="$4" pct_before="$5" task_dir="$6"
-
-  if ! validate_plan "$plan"; then
-    fail_task "$task_id" "$PLAN_FILE_NAME の内容が不正です"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "$(printf 'タスク分解の結果を解釈できませんでした（sub_issues は 1〜%s 件の配列で、各要素に空でない title が必要です）。\n\n```json\n%s\n```' \
-      "$MAX_SUB_ISSUES" "$(head -c 3000 "$plan")")"
-    record_spend "$task_id" "$cost" "$pct_before" "" failed
-    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-    return 1
-  fi
-
-  log "[$task_id] 分解案を提案します ($(jq '.sub_issues | length' "$plan") 件)"
-  task_phase awaiting-approval "分解案 $(jq '.sub_issues | length' "$plan") 件"
-  set_labels "$number" "$LABEL_AWAITING"
-  post_report "$(render_plan_comment "$plan")"
-
-  local pct_after=""
-  parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" plan
-  remove_workspace "$task_dir"
-  log "[$task_id] 承認待ち: \`$TRIGGER_COMMAND $APPROVE_WORD\` のコメントで sub issue を作成します"
-  return 0
+# 承認待ちの案を取り下げ、承認できなくする
+withdraw_plan() {
+  local comment
+  comment=$(latest_plan_comment "$1") || return 0
+  gh api -X PATCH "repos/$REPO/issues/comments/$(jq -r '.id' <<<"$comment")" \
+    -f "body=$(printf '（この案は取り下げました）\n\n%s' "$(jq -r '.body' <<<"$comment" | sed "s|$PLAN_MARKER|$PLAN_WITHDRAWN_MARKER|")")" >/dev/null 2>&1 \
+    || warn "#$1 の分解案を取り下げられませんでした"
 }
 
+# 承認待ちの案のコメント（{id, body}）。無ければ 1 を返す
 latest_plan_comment() {
   local number="$1" found
   found=$(gh api --paginate "repos/$REPO/issues/$number/comments" 2>/dev/null \
@@ -148,19 +123,21 @@ approve_plan_task() {
   approve_id=$(is_approve_task "$task") || return 1
   n=$(jq '(.comments // []) | length' <<<"$task")
   number=$(jq -r '.number' <<<"$task")
-  set_reply_target "$number" "$task"
 
   for (( i = 0; i < n; i++ )); do
     id=$(jq -r ".comments[$i].id" <<<"$task")
     [[ $id == "$approve_id" ]] && continue
-    post_report "分解案の承認と同じ回に届いたため、この指示は処理していません。sub issue の作成後に改めて投稿してください。" \
-      "$(jq -r ".comments[$i].reply_kind" <<<"$task")" "$(jq -r ".comments[$i].reply_number" <<<"$task")" "$id"
+    post_reply "$(jq -r ".comments[$i].reply_kind" <<<"$task")" "$(jq -r ".comments[$i].reply_number" <<<"$task")" "$id" \
+      "分解案の承認と同じ回に届いたため、この指示は処理していません。sub issue の作成後に改めて投稿してください。"
   done
+  local approve
+  approve=$(jq -c --arg id "$approve_id" '.comments[] | select(.id == $id)' <<<"$task")
+  reply_approve() { post_reply "$(jq -r '.reply_kind' <<<"$approve")" "$(jq -r '.reply_number' <<<"$approve")" "$approve_id" "$1"; }
 
   local comment plan created
   if ! comment=$(latest_plan_comment "$number"); then
     warn "#$number に承認待ちの分解案がありません"
-    post_report "承認待ちの分解案がありません。分解が必要なら \`$LABEL_QUEUED\` を付け直してください。"
+    reply_approve "承認待ちの分解案がありません。分解が必要なら \`$LABEL_QUEUED\` を付け直してください。"
     return 0
   fi
 
@@ -170,7 +147,7 @@ approve_plan_task() {
     err "#$number の分解案を解釈できません"
     notify "❌ **失敗** $(issue_ref "$REPO" "$number")"$'\n'"$(md_quote "分解案の plan.json を解釈できませんでした")"
     set_labels "$number" "$LABEL_FAILED"
-    post_report "分解案の plan.json を解釈できませんでした。コメントを編集した場合は JSON として正しいか確認してください。"
+    reply_approve "分解案の plan.json を解釈できませんでした。コメントを編集した場合は JSON として正しいか確認してください。"
     rm -f "$plan"
     return 0
   fi
@@ -182,7 +159,7 @@ approve_plan_task() {
     err "#$number の sub issue を 1 件も作成できませんでした"
     notify "❌ **失敗** $(issue_ref "$REPO" "$number")"$'\n'"$(md_quote "分解案は承認されましたが、sub issue を作成できませんでした")"
     set_labels "$number" "$LABEL_FAILED"
-    post_report "分解案は承認されましたが、sub issue の作成に失敗しました。"
+    reply_approve "分解案は承認されましたが、sub issue の作成に失敗しました。"
     return 0
   fi
 
@@ -192,7 +169,7 @@ approve_plan_task() {
     || warn "#$number の分解案コメントを承認済みに更新できませんでした"
 
   set_labels "$number" "$LABEL_DONE"
-  post_report "$(
+  reply_approve "$(
     printf '**分解案を承認しました。作成した sub issue**:\n%s\n\n' "$created"
     printf 'それぞれに `%s` が付いています。次回のポーリングから順に実装され、すべて閉じたらこの Issue も自動で閉じます。\n' "$LABEL_QUEUED"
   )"

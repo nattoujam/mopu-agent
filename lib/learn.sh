@@ -120,7 +120,7 @@ learn_schema() {
 }
 
 # 学習のエージェントには読むことしかさせない。書き込みの許可、ホスト側のコマンド、
-# push を前提にした CI の Stop hook を外す
+# フェーズの Stop hook を外す
 learn_agent_settings() {
   local task_dir="$1" out="$2"
   build_agent_settings "$task_dir" "$out.base" || return 1
@@ -150,13 +150,20 @@ publish_learn_issues() {
 # run_learn_task_body の local の task_id / kind / number / title / cost / pct_before / task_dir を読むため、その中からしか呼べない。
 # 学習の失敗は数え、上限まで次のポーリングでやり直す。棚卸しは指示の中身が変わるまで出し直さない
 learn_failed() {
-  fail_task "$task_id" "$1"
+  err "[$task_id] $1"
+  record_outcome false "$1"
   notify "❌ **失敗** $(issue_ref "$REPO") $title"$'\n'"\`$task_id\`"$'\n'"$(md_quote "$1")"
   [[ $kind == learn ]] && mark_learned "$number" failed
   [[ $kind == tidy ]] && learn_memory_hash > "$(learn_tidy_file)"
   record_spend "$task_id" "${cost:-0}" "$pct_before" "" failed
   [[ -d $task_dir ]] && log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
   return 1
+}
+
+record_outcome() {
+  [[ -n $TASK_OUTCOME_FILE ]] || return 0
+  jq -nc --argjson ok "$1" --arg reason "${2:-}" \
+    '{ok: $ok} + (if $reason == "" then {} else {reason: $reason} end)' > "$TASK_OUTCOME_FILE"
 }
 
 # 使い方: run_learn_task（CURRENT_TASK_JSON に learn / tidy のタスク）
@@ -232,7 +239,8 @@ run_learn_task_body() {
   # shellcheck disable=SC2034  # invoke_agent が読む
   AGENT_GH_TOKEN=""
   AGENT_JSON_SCHEMA=$(learn_schema)
-  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "" "" || rc=$?
+  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "" \
+    "$(duration_seconds "$TASK_TIMEOUT")" "$MAX_TASK_BUDGET_USD" || rc=$?
   # shellcheck disable=SC2034  # invoke_agent が読む
   AGENT_JSON_SCHEMA=""
 

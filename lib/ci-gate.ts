@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stop hook（tools/ci-gate）の判定のうち、ワークフローの起動条件の解釈を受け持つ。
+// CI 待ち（lib/verify.sh）の判定のうち、ワークフローの起動条件の解釈を受け持つ。
 // mopu-agent は実行時の依存を持たないので、YAML は `on:` の書き方のうち実際に使われる形だけを読む。
 // 読めない形は "unknown" とし、呼び出し側は「CI が動くはず」として扱う
 import { execFileSync } from "node:child_process";

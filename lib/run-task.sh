@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# タスク 1 件の state machine。遷移は run_task_body のループ、各 state の中身は state_<名前> にある。
+# タスクの状態は TASK_ で始まるグローバル変数に持ち、run_task が 1 件ごとに初期化する
 
+# 失敗した state を --retry でやり直すとき、その state より前の結果を前回のログから引き継ぐファイル
+CARRY_FILES=(triage.json verify.json report.json)
+# CI 待ちでタスクの時間制限を使い切っても、report を書けるようにする呼び出しごとの最低時間
+MIN_CALL_SECONDS=300
 
 post_comment() {
   local issue="$1" body="$2"
@@ -7,77 +13,48 @@ post_comment() {
     | gh issue comment "$issue" -R "$REPO" --body-file - >/dev/null
 }
 
-# 報告の宛先。タスクの番号は元 Issue に読み替えるが、報告まで Issue 側へ流すと
-# PR で受けた指示とその結果が別のページに分かれてしまうため、指示が来た
-# コメントと同じ場所に返す。複数のコメントを畳んだタスクでは最後のコメントを
-# 代表とし、失敗の報告と PR のまとめだけをそこへ返す
-REPLY_KIND=issue
-REPLY_NUMBER=""
-REPLY_COMMENT_ID=""
-
-set_reply_target() {
-  local number="$1" task="${2:-}" last
-  REPLY_KIND=issue
-  REPLY_NUMBER="$number"
-  REPLY_COMMENT_ID=""
-
-  [[ -n $task ]] || return 0
-  last=$(jq -c '(.comments // []) | last // empty' <<<"$task" 2>/dev/null)
-  [[ -n $last ]] || return 0
-
-  REPLY_NUMBER=$(jq -r '.reply_number' <<<"$last")
-  REPLY_KIND=$(jq -r '.reply_kind // "issue"' <<<"$last")
-  REPLY_COMMENT_ID=$(jq -r '.id // ""' <<<"$last")
+# 使い方: already_posted <issue|review> <番号> <マーカー>
+already_posted() {
+  local kind="$1" number="$2" marker="$3" path="issues/$2/comments"
+  [[ $kind == review ]] && path="pulls/$number/comments"
+  gh api --paginate "repos/$REPO/$path" --jq '.[].body' 2>/dev/null | grep -qF -- "$marker"
 }
 
-# PR のレビューコメントは専用エンドポイントを使わないと同じスレッドに入らない。
-# 会話タブのコメントには返信スレッドがないので、通常のコメントで返す
-post_report() {
-  local body="$1" kind="${2:-$REPLY_KIND}" number="${3:-$REPLY_NUMBER}" cid="${4:-$REPLY_COMMENT_ID}"
-  if [[ $kind == review && -n $cid ]]; then
-    if gh api -X POST "repos/$REPO/pulls/$number/comments/$cid/replies" \
-      -f "body=$(printf '%s\n\n%s\n' "$COMMENT_MARKER" "$body")" >/dev/null 2>&1
-    then
-      return 0
-    fi
-    warn "レビューコメント $cid への返信に失敗しました。#$number にコメントします"
+# 使い方: post_reply <issue|review> <番号> <コメント ID> <本文>
+# 返信はコメントが来た場所に返す。PR のレビューコメントは専用のエンドポイントでないと同じスレッドに入らない
+post_reply() {
+  local kind="$1" number="$2" cid="$3" marker="<!-- mopu-agent:reply-to $3 -->" body
+  body=$(printf '%s\n\n%s' "$4" "$marker")
+  already_posted "$kind" "$number" "$marker" && return 0
+  if [[ $kind == review ]]; then
+    gh api -X POST "repos/$REPO/pulls/$number/comments/$cid/replies" \
+      -f "body=$(printf '%s\n\n%s\n' "$COMMENT_MARKER" "$body")" >/dev/null 2>&1 && return 0
+    warn "[$TASK_ID] レビューコメント $cid への返信に失敗しました。#$number にコメントします"
   fi
   post_comment "$number" "$body"
 }
 
-join_report() {
-  local body="$1" summary="$2"
-  [[ -n $body && -n $summary ]] && body+=$'\n\n---\n\n'
-  printf '%s%s' "$body" "$summary"
+# 使い方: post_replies <出口の JSON> [各返信の末尾に足す文]
+post_replies() {
+  local outcome="$1" footer="${2:-}" row reply
+  while IFS= read -r row; do
+    reply=$(jq -r --arg id "$(jq -r '.id' <<<"$row")" '.replies[$id] // ""' <<<"$outcome")
+    post_reply "$(jq -r '.reply_kind' <<<"$row")" "$(jq -r '.reply_number' <<<"$row")" "$(jq -r '.id' <<<"$row")" \
+      "${reply}${footer:+$'\n\n---\n'$footer}"
+  done < <(jq -c '(.comments // [])[]' <<<"$TASK_JSON")
 }
 
-REPLIES_FILE_NAME='.mopu-agent-replies.json'
-
-# コメントごとの返信を、それが投稿されたスレッドへ返す。エージェントが書かなかった
-# ID は最終メッセージで埋める。PR リンクなどのまとめは繰り返しても意味がないので、
-# 代表（最後のコメント）にだけ付ける
-post_replies() {
-  local task="$1" replies="$2" fallback="$3" summary="$4"
-  local n i id kind number reply
-  n=$(jq '(.comments // []) | length' <<<"$task" 2>/dev/null)
-  [[ $n =~ ^[0-9]+$ ]] || n=0
-
-  if (( n == 0 )); then
-    post_report "$(join_report "$fallback" "$summary")"
-    return 0
+# mopu-agent からの報告は、PR が無ければ Issue、あれば PR に書く
+post_task_report() {
+  if [[ -n $TASK_PR ]]; then
+    post_comment "$(pr_number)" "$1"
+  else
+    post_comment "$TASK_NUMBER" "$1"
   fi
+}
 
-  for (( i = 0; i < n; i++ )); do
-    id=$(jq -r ".comments[$i].id" <<<"$task")
-    kind=$(jq -r ".comments[$i].reply_kind" <<<"$task")
-    number=$(jq -r ".comments[$i].reply_number" <<<"$task")
-    reply=""
-    [[ -f $replies ]] && reply=$(jq -r --arg id "$id" '.replies[$id] // empty' "$replies" 2>/dev/null)
-    [[ -n $reply ]] || reply="$fallback"
-    (( i == n - 1 )) && reply=$(join_report "$reply" "$summary")
-    [[ -n $reply ]] || continue
-    post_report "$reply" "$kind" "$number" "$id"
-  done
+answer_footer() {
+  printf '回答は、行頭に `%s` を付けてコメントしてください。' "$TRIGGER_COMMAND"
 }
 
 # 付いていないラベルの削除は gh がエラーにするため、追加と削除を分けて実行する
@@ -93,245 +70,115 @@ set_labels() {
   done
 }
 
-# レビュアーの指定に失敗しても PR 自体は成立させる
-request_review() {
-  local task_id="$1" branch="$2" reviewer="${REPO%%/*}" out
-  if ! out=$(gh pr edit "$branch" -R "$REPO" --add-reviewer "$reviewer" 2>&1); then
-    warn "[$task_id] レビュアー '$reviewer' を指定できませんでした: $out"
-  fi
-}
-
-# .result は複数行なので、行単位の tail では最終行しか取れない。
-# 最後の result イベントを取り出してから中身を読む
-last_result() {
-  jq -rs 'map(select(.type=="result")) | last | .result // empty' "$1" 2>/dev/null
-}
-
-# 失敗したタスクが残していった作業ディレクトリのうち、その Issue の最新のもの
-find_leftover_task() {
-  local number="$1"
-  find "$WORKTREES_DIR" -mindepth 1 -maxdepth 1 -type d \
-    \( -name "issue-${number}-*" -o -name "comment-${number}-*" \) 2>/dev/null \
-    | sort | tail -1
-}
-
-# --retry で前回のタスクをそのまま再現するための控え。Issue 本文から組み直すと
-# コメント由来のタスクでは指示だったコメント本文が失われる。作業ツリーではなく
-# ログ側に置くのは、エージェントの cwd から見えない場所に保つため
-# commit は実行時の記録なので、引き継ぐタスクからは落とす
-load_leftover_task() {
-  local dir
-  dir=$(find_leftover_task "$1")
-  [[ -n $dir ]] || return 1
-  # comments を持たない古い控えは、指示が落ちないよう 1 件の配列に寄せる
-  jq -ec 'del(.commit)
-    | if (.comments | type) == "array" then .
-      else
-        .comments = (if (.comment_id // "") == "" then []
-                     else [{id: .comment_id, actor: .actor, instruction: (.comment // ""),
-                            reply_kind: (.reply_kind // "issue"),
-                            reply_number: (.reply_number // .number), url: ""}]
-                     end)
-        | del(.comment, .comment_id, .reply_kind, .reply_number)
-      end' "$TASK_LOGS_DIR/${dir##*/}/$TASK_FILE_NAME" 2>/dev/null
-}
-
-# タスクの会話 ID を Issue 番号ごとに控える。--retry の再開と、PR コメントへの
-# 対応で前回の会話を引き継ぐために使う。作業ツリーと違って成功時にも消さないので、
-# レビューが数日後に来ても、その PR を書いたときの判断から続けられる
-# cost_usd は会話の累計の total_cost_usd。再開した実行の total_cost_usd は再開元の
-# 会話の分も含むため、そのタスクの費用を出すときに差し引く
-record_session() {
-  local number="$1" sid="$2" cost="${3:-0}" tmp
-  [[ -n $sid && $sid != null ]] || return 0
-  [[ -f $SESSION_FILE ]] || echo '{}' > "$SESSION_FILE"
-  tmp="$SESSION_FILE.tmp"
-  if jq --arg n "$number" --arg s "$sid" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson c "${cost:-0}" \
-      '.[$n] = {session_id: $s, updated: $t, cost_usd: $c}' "$SESSION_FILE" > "$tmp" 2>/dev/null
-  then
-    mv "$tmp" "$SESSION_FILE"
-  else
-    rm -f "$tmp"
-    warn "会話 ID を記録できませんでした: #$number"
-  fi
-}
-
-forget_session() {
-  local number="$1" tmp
-  [[ -f $SESSION_FILE ]] || return 0
-  tmp="$SESSION_FILE.tmp"
-  if jq --arg n "$number" 'del(.[$n])' "$SESSION_FILE" > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$SESSION_FILE"
-  else
-    rm -f "$tmp"
-  fi
-}
-
-session_of_issue() {
-  [[ -f $SESSION_FILE ]] || return 0
-  jq -r --arg n "$1" '.[$n].session_id // empty' "$SESSION_FILE" 2>/dev/null
-}
-
-session_cost_of_issue() {
-  [[ -f $SESSION_FILE ]] || { echo 0; return 0; }
-  jq -r --arg n "$1" '.[$n].cost_usd // 0' "$SESSION_FILE" 2>/dev/null || echo 0
-}
-
-RESUME_FILE_NAME='resume.json'
-
-# --retry で渡す前回の失敗の情報。何が起きて、何がやりかけで残っているか
-build_retry_context() {
-  local prev_log="$1" wt="$2" result stderr changes
-  [[ -f $prev_log/stream.jsonl ]] && result=$(last_result "$prev_log/stream.jsonl")
-  [[ -s $prev_log/stderr.log ]] && stderr=$(tail -20 "$prev_log/stderr.log")
-  changes=$(git -C "$wt" status --porcelain)
-  {
-    echo "## 前回の実行について"
-    echo
-    echo "このタスクの前回の実行は失敗し、その作業ツリーをそのまま引き継いでいます。"
-    echo "やりかけの変更が残っているので、最初からやり直さず続きから進めてください。"
-    # 報告自体が markdown（コードフェンス入り）なので、囲まずにそのまま置く
-    if [[ -n ${result:-} ]]; then
-      echo; echo "### 前回の報告"; echo; printf '%s\n' "$result"
-    fi
-    if [[ -n ${stderr:-} ]]; then
-      echo; echo "### 前回の stderr"; echo; echo '```'; printf '%s\n' "$stderr"; echo '```'
-    fi
-    echo; echo "### 引き継いだ未コミットの変更"; echo; echo '```'
-    printf '%s\n' "${changes:-（なし）}"
-    echo '```'
-  } | head -c 20000
-}
-
-build_pending_plan_context() {
-  {
-    echo "## 承認待ちの分解案"
-    echo
-    echo "この Issue には、前回のセッションが提案した分解案が承認待ちで残っています。"
-    echo "上のコメントはその案への返答です。案を直す指示なら、同じ判定基準で"
-    echo "作り直した案を計画ファイルに書いてください（実装はしない）。"
-    echo "分解せずに実装するよう指示されたなら、案は捨ててそのまま実装して構いません。"
-    echo
-    echo '```json'
-    plan_from_comment "$1"
-    echo '```'
-  }
-}
-
-build_prompt() {
-  local kind="$1" number="$2" title="$3" body="$4" task="${5:-}"
-  {
-    echo "# タスク"
-    echo
-    if [[ $kind == comment ]]; then
-      local n i id url instruction
-      n=$(jq '(.comments // []) | length' <<<"$task" 2>/dev/null)
-      [[ $n =~ ^[0-9]+$ ]] || n=0
-      if (( n > 1 )); then
-        echo "GitHub の #$number に次の $n 件のコメントが投稿されました。**そのすべて**に対応してください。"
-      else
-        echo "GitHub の #$number に次のコメントが投稿されました。この指示に対応してください。"
-      fi
-      echo
-      for (( i = 0; i < n; i++ )); do
-        id=$(jq -r ".comments[$i].id" <<<"$task")
-        url=$(jq -r ".comments[$i].url // \"\"" <<<"$task")
-        instruction=$(jq -r ".comments[$i].instruction" <<<"$task")
-        printf '### コメント %s\n\n' "$id"
-        [[ -n $url ]] && printf '%s\n\n' "$url"
-        echo '```'
-        printf '%s\n' "$instruction"
-        echo '```'
-        echo
-      done
-      echo "## 背景: #$number「$title」の本文"
-    else
-      echo "GitHub Issue #$number「$title」に対応してください。"
-      echo
-      echo "## Issue 本文"
-    fi
-    echo
-    echo '```'
-    printf '%s\n' "${body:-(本文なし)}"
-    echo '```'
-    if [[ $kind == comment ]]; then
-      local history
-      history=$(render_history "$task")
-      if [[ -n $history ]]; then
-        echo
-        echo "## 背景: その後のやり取り（古い順）"
-        echo
-        printf '%s\n' "$history"
-      fi
-    fi
-  } | head -c 60000
-}
-
 # 使い方: is_our_pr <gh pr view の JSON>
-# tools/push-branch が作る仮の PR も、この後に書き換える本文も COMMENT_MARKER を持つ
 is_our_pr() {
   jq -e --arg m "$COMMENT_MARKER" '(.body // "") | contains($m)' <<<"$1" >/dev/null 2>&1
 }
 
-# 使い方: build_pr_context <gh pr view の JSON>
-build_pr_context() {
-  echo "## 作業先の PR"
-  echo
-  if is_our_pr "$1"; then
-    echo "mopu-agent が作った PR で、今の本文は次のとおり。"
-    echo
-    md_quote "$(jq -r '.body // ""' <<<"$1")"
-    echo
+# タスクのブランチの、開いている PR を TASK_PR（JSON。無ければ空）と TASK_PR_OURS に読み込む。
+# gh pr view にブランチ名を渡すと、フォークから出た同名ブランチの PR も当たるため isCrossRepository を見る
+load_task_pr() {
+  TASK_PR=$(gh pr view "$TASK_BRANCH" -R "$REPO" --json number,url,isDraft,body,state,isCrossRepository 2>/dev/null \
+    | jq -c 'select(.state == "OPEN" and .isCrossRepository == false)' 2>/dev/null)
+  TASK_PR_OURS=0
+  if [[ -n $TASK_PR ]] && is_our_pr "$TASK_PR"; then TASK_PR_OURS=1; fi
+  return 0
+}
+
+pr_number() { jq -r '.number' <<<"$TASK_PR"; }
+
+pr_body_with_marker() {
+  printf 'Closes #%s\n\n%s\n\n---\n%s' "$TASK_NUMBER" "$1" "$COMMENT_MARKER"
+}
+
+task_branch() {
+  local b
+  b=$(jq -r '.branch // empty' <<<"$1" 2>/dev/null)
+  printf '%s' "${b:-${BRANCH_PREFIX}$2}"
+}
+
+task_phase() { record_phase "$TASK_LOG/$PHASE_FILE_NAME" "$@"; }
+
+lead_quote() {
+  [[ -n $1 ]] || return 0
+  md_quote "${1%%$'\n\n'*}"
+}
+
+duration_seconds() {
+  local v="$1"
+  case $v in
+    *d) echo $(( ${v%d} * 86400 )) ;;
+    *h) echo $(( ${v%h} * 3600 )) ;;
+    *m) echo $(( ${v%m} * 60 )) ;;
+    *s) echo "${v%s}" ;;
+    *) echo "$v" ;;
+  esac
+}
+
+# --- チェックポイント（Issue ごとの最後の会話） ---
+
+checkpoint_get() {
+  [[ -f $SESSION_FILE ]] || return 0
+  jq -c --arg n "$TASK_NUMBER" '.[$n] // empty' "$SESSION_FILE" 2>/dev/null
+}
+
+# 使い方: checkpoint_update <jq の式> [jq の引数 ...]
+checkpoint_update() {
+  local expr="$1" tmp="$SESSION_FILE.tmp"
+  shift
+  [[ -f $SESSION_FILE ]] || echo '{}' > "$SESSION_FILE"
+  if jq "$@" "$expr" "$SESSION_FILE" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$SESSION_FILE"
   else
-    echo "mopu-agent 以外が作った PR。"
+    rm -f "$tmp"
+    warn "チェックポイントを更新できませんでした: $expr"
   fi
 }
 
-QUESTION_FILE_NAME='.mopu-agent-question.md'
-NO_SPLIT_FILE_NAME='.mopu-agent-no-split.md'
-
-build_system_prompt() {
-  local kind="$1" branch="$2" wt="$3" decompose_off="$4" p="$AGENT_DIR/prompts" text
-  {
-    cat "$p/agent.md"
-    [[ $kind == comment ]] && printf '\n' && cat "$p/command.md"
-
-    printf '\n'
-    sed -e "s|%%QUESTION_FILE%%|$wt/$QUESTION_FILE_NAME|g" -e "s|%%NOTE_FILE%%|$wt/$NOTE_FILE_NAME|g" "$p/triage.md"
-    printf '\n'
-    if [[ -n $decompose_off ]]; then
-      text=$(<"$p/decompose-off.md")
-      printf '%s\n' "${text//"%%REASON%%"/"$decompose_off"}"
-    else
-      sed -e "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" -e "s|%%PLAN_FILE%%|$wt/$PLAN_FILE_NAME|g" \
-        -e "s|%%NO_SPLIT_FILE%%|$wt/$NO_SPLIT_FILE_NAME|g" "$p/decompose.md"
-    fi
-
-    printf '\n'
-    cat "$p/implement.md"
-    # SETUP_CMD は & や | を含みうるので、sed ではなく bash の置換で埋め込む
-    if [[ -n $SETUP_CMD ]]; then
-      text=$(<"$p/setup.md")
-      printf '\n%s\n' "${text//"%%SETUP_CMD%%"/"$SETUP_CMD"}"
-    fi
-
-    printf '\n'
-    sed -e "s|%%PUSH_CMD%%|$AGENT_DIR/tools/push-branch|g" -e "s|%%BRANCH%%|$branch|g" "$p/verify.md"
-    if [[ $CONTAINER_CHECKS != '[]' ]]; then
-      printf '\n'
-      sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$p/container.md"
-      jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS"
-    fi
-
-    printf '\n'
-    sed "s|%%BASE_BRANCH%%|$BASE_BRANCH|g" "$p/report.md"
-    printf '\n```markdown\n'
-    cat "$p/pr-body.md"
-    printf '```\n'
-    [[ $kind == comment ]] && printf '\n' && sed "s|%%REPLIES_FILE%%|$wt/$REPLIES_FILE_NAME|g" "$p/replies.md"
-    return 0
-  }
+checkpoint_set() {
+  local sid="$1" cost="$2"
+  checkpoint_update '.[$n] = {session_id: $s, head: $h, prompt_hash: $p, memory_hash: $mh, cost_usd: $c, updated: $t}' \
+    --arg n "$TASK_NUMBER" --arg s "$sid" --arg h "$(git -C "$TASK_WT" rev-parse HEAD)" \
+    --arg p "$TASK_SYS_HASH" --arg mh "$TASK_MEMORY_HASH" --argjson c "${cost:-0}" --arg t "$(date -Is)"
 }
+
+checkpoint_forget() { checkpoint_update 'del(.[$n])' --arg n "$1"; }
+
+# PR がマージされた Issue の、ローカルブランチとチェックポイントを消す
+cleanup_merged() {
+  [[ -s $SESSION_FILE ]] || return 0
+  local merged n head
+  merged=$(gh pr list -R "$REPO" --state merged --limit 100 --json number,headRefName 2>/dev/null) || return 0
+  for n in $(jq -r 'keys[]' "$SESSION_FILE"); do
+    head=$(jq -r --arg n "$n" --arg b "$BRANCH_PREFIX$n" \
+      'map(select(.headRefName == $b or (.number | tostring) == $n)) | .[0].headRefName // empty' <<<"$merged")
+    [[ -n $head ]] || continue
+    if (( ${DRY_RUN:-0} )); then
+      log "PR がマージされたため、$head とチェックポイントを消します（dry-run）: #$n"
+      continue
+    fi
+    [[ -d $REPO_DIR/.git ]] && git -C "$REPO_DIR" branch -D "$head" >/dev/null 2>&1
+    checkpoint_forget "$n"
+    log "PR がマージされたため、$head とチェックポイントを消しました: #$n"
+  done
+}
+
+# 使い方: last_task_log <Issue 番号>
+last_task_log() {
+  find "$TASK_LOGS_DIR" -mindepth 1 -maxdepth 1 -type d \( -name "issue-$1-*" -o -name "comment-$1-*" \) 2>/dev/null \
+    | sed -E 's/.*-([0-9]{8}-[0-9]{6})$/\1 &/' | sort | tail -1 | cut -d' ' -f2-
+}
+
+# 使い方: load_failed_task <Issue 番号>
+# その Issue の最後のタスクが失敗していれば、そのタスク JSON を出す
+load_failed_task() {
+  local dir
+  dir=$(last_task_log "$1")
+  [[ -n $dir ]] && jq -e '.ok == false and (.failed_state // "") != ""' "$dir/outcome.json" >/dev/null 2>&1 || return 1
+  jq -c 'del(.commit)' "$dir/$TASK_FILE_NAME" 2>/dev/null
+}
+
+# --- エージェントの呼び出し ---
 
 # 使い方: build_agent_settings <タスクディレクトリ> <出力ファイル>
 # パス制限は絶対パスでしか正しく効かないため、タスクごとに生成する
@@ -358,15 +205,15 @@ build_agent_settings() {
   jq --arg wt "$wt" --arg repo_git "$REPO_DIR/.git" --arg admin "$admin" \
      --argjson secrets "$secrets_json" --arg tools "$tools" \
     'def abs: sub("^/"; "//");
-     ["\($tools)/push-branch", "\($tools)/run-container *"] as $host_cmds
+     ["\($tools)/run-container *"] as $host_cmds
      | .permissions.allow = (
         ["Read(\($wt | abs)/**)", "Edit(\($wt | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
      | .hooks.PreToolUse = [
         {matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]},
-        {matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($tools)/track-phase"}]}]
-     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/ci-gate", timeout: 600}]}]
+        {matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($tools)/phase-guard"}]}]
+     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/phase-gate"}]}]
      | .permissions.deny = (
         ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
         + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
@@ -380,32 +227,29 @@ build_agent_settings() {
     "$AGENT_DIR/settings/agent-settings.json" > "$out"
 }
 
-# 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <プロンプト> <システムプロンプト> <設定ファイル> <ブランチ> [再開する会話 ID]
+# 使い方: invoke_agent <タスクディレクトリ> <ログディレクトリ> <本文> <システムプロンプト> <設定ファイル> <再開する会話 ID> <時間制限（秒）> <予算（USD）> [環境変数=値 ...]
+# stream-json は <ログディレクトリ>/stream.jsonl に追記する
 invoke_agent() {
-  local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" branch="$6" resume_id="${7:-}"
+  local task_dir="$1" log_dir="$2" prompt="$3" sys_prompt="$4" settings="$5" resume_id="$6" limit="$7" budget="$8"
+  shift 8
   local -a resume_args=() schema_args=()
   [[ -n ${AGENT_JSON_SCHEMA:-} ]] && schema_args=(--json-schema "$AGENT_JSON_SCHEMA")
-
   # --fork-session で会話を分岐させる。元の会話をそのまま残せるので、再開した
   # 先で失敗しても同じ地点から何度でもやり直せる
-  if [[ -n $resume_id ]]; then
-    resume_args=(--resume "$resume_id" --fork-session)
-    # 同じタスク説明が会話の中で二度目になるため、新しい依頼ではないと断っておく
-    sys_prompt+=$'\n\n'"$(cat "$AGENT_DIR/prompts/resume.md")"
-  fi
+  [[ -n $resume_id ]] && resume_args=(--resume "$resume_id" --fork-session)
 
   (
     cd "$task_dir/$REPO_SUBDIR" || exit 1
     # sandbox.credentials は Bash の子プロセスにしか効かない（WebFetch は本体側で動く）
     unset GH_TOKEN GITHUB_TOKEN
     [[ -n ${AGENT_GH_TOKEN:-} ]] && export GH_TOKEN="$AGENT_GH_TOKEN"
-    export MOPU_TASK_DIR="$task_dir" MOPU_BRANCH="$branch"
-    # tools/ci-gate（Stop hook）が読む。hook は Claude Code の環境を引き継ぐ
-    export MOPU_REPO="$REPO" MOPU_BASE_BRANCH="$BASE_BRANCH" MOPU_LOG_DIR="$log_dir" MOPU_HEAD_BEFORE="${GATE_HEAD_BEFORE:-}"
+    export MOPU_TASK_DIR="$task_dir" MOPU_LOG_DIR="$log_dir"
+    # shellcheck disable=SC2163  # 引数は 名前=値 の組
+    (( $# )) && export "$@"
     # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュを worktree に持たせる
     export npm_config_cache="$task_dir/$REPO_SUBDIR/.npm-cache" XDG_CACHE_HOME="$task_dir/$REPO_SUBDIR/.cache"
     # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
-    timeout "$TASK_TIMEOUT" "$CLAUDE_BIN" -p "$prompt" \
+    timeout "$limit" "$CLAUDE_BIN" -p "$prompt" \
       "${resume_args[@]}" "${schema_args[@]}" \
       --settings "$settings" \
       --permission-mode dontAsk \
@@ -414,463 +258,612 @@ invoke_agent() {
       --append-system-prompt "$sys_prompt" \
       --output-format stream-json --verbose \
       --model "$MODEL" \
-      --max-budget-usd "$MAX_TASK_BUDGET_USD" </dev/null
-  ) > "$log_dir/stream.jsonl" 2> "$log_dir/stderr.log"
+      --max-budget-usd "$budget" </dev/null
+  ) >> "$log_dir/stream.jsonl" 2>> "$log_dir/stderr.log"
 }
 
-ci_gate_report() {
-  local f="$1/ci-gate.json" verdict detail files tests
-  [[ -s $f ]] || return 0
-  verdict=$(jq -r '.verdict // empty' "$f")
-  detail=$(jq -r '.detail // ""' "$f")
-  case $verdict in
-    passed)     printf '**CI**: 通過' ;;
-    failed)     printf '**CI**: 検証未通過。直しても落ちたままで、上限に達した: %s' "$detail" ;;
-    unverified) printf '**CI**: 未検証（%s）' "$detail" ;;
-    skipped)
-      files=$(jq -r '(.files // [])[:20] | map("`\(.)`") | join(", ")' "$f")
-      printf '**CI**: 対象外（%s）: %s' "$detail" "$files"
-      ;;
-    *) return 0 ;;
-  esac
-  local critic reasons
-  critic=$(jq -r '.critic_verdict // empty' "$f")
-  reasons=$(jq -r '(.critic_reasons // []) | map("- \(.)") | join("\n")' "$f")
-  case $critic in
-    approve)    printf '\n\n**レビュー（critic）**: 承認' ;;
-    unresolved) printf '\n\n**レビュー（critic）**: 指摘が残ったまま上限に達した:\n%s' "$reasons" ;;
-    revise)     printf '\n\n**レビュー（critic）**: 指摘に対応している途中で作業が終わった:\n%s' "$reasons" ;;
-    error)      printf '\n\n**レビュー（critic）**: 確かめられなかった（%s）' "$(jq -r '(.critic_reasons // [])[0] // ""' "$f")" ;;
-  esac
-  tests=$(jq -r '(.test_changes // [])[] | "- `\(.)`"' "$f")
-  [[ -n $tests ]] && printf '\n\n**テストに関わる変更**（テストを弱めていないか確かめてください）:\n%s' "$tests"
-  return 0
-}
+# 使い方: call_agent <state> <本文>
+# Issue のチェックポイントの会話を引き継いで LLM の state を 1 回実行する。終える条件を満たしたら
+# TASK_OUTCOME に出口の JSON を入れ、チェックポイントを進めて 0 を返す。満たさなければ TASK_FAIL_REASON を入れて 1 を返す
+call_agent() {
+  local state="$1" body="$2" cp resume_id="" base_cost=0 head_start lines_before rc=0
+  local -a env_args
+  head_start=$(git -C "$TASK_WT" rev-parse HEAD)
+  rm -f "$TASK_WT/$OUTCOME_FILE_NAME" "$TASK_LOG/phase-gate.count"
 
-TASK_OUTCOME_FILE=""
-TASK_PHASE_FILE=""
-
-task_phase() {
-  [[ -n $TASK_PHASE_FILE ]] || return 0
-  record_phase "$TASK_PHASE_FILE" "$@"
-}
-
-lead_quote() {
-  [[ -n $1 ]] || return 0
-  md_quote "${1%%$'\n\n'*}"
-}
-
-record_outcome() {
-  [[ -n $TASK_OUTCOME_FILE ]] || return 0
-  jq -nc --argjson ok "$1" --arg reason "${2:-}" \
-    '{ok: $ok} + (if $reason == "" then {} else {reason: $reason} end)' > "$TASK_OUTCOME_FILE"
-}
-
-fail_task() {
-  err "[$1] $2"
-  record_outcome false "$2"
-  task_phase failed "$2"
-}
-
-# 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文>
-# コメントの内容と返信先は CURRENT_TASK_JSON の comments から読む
-run_task() {
-  local rc=0
-  TASK_OUTCOME_FILE=""
-  TASK_PHASE_FILE=""
-  run_task_body "$@" || rc=$?
-  if [[ -n $TASK_OUTCOME_FILE && ! -f $TASK_OUTCOME_FILE ]]; then
-    if (( rc == 0 )); then record_outcome true; else record_outcome false "終了コード $rc で中断しました"; fi
-  fi
-  TASK_OUTCOME_FILE=""
-  TASK_PHASE_FILE=""
-  return "$rc"
-}
-
-# 使い方: task_branch <タスク JSON> <番号>
-# タスクがコミットを積むブランチ
-task_branch() {
-  local b
-  b=$(jq -r '.branch // empty' <<<"$1" 2>/dev/null)
-  printf '%s' "${b:-${BRANCH_PREFIX}$2}"
-}
-
-# CI の関門と critic を抜けたか。critic が動かなかった（error）ときは、変更の問題ではないので止めない
-gate_passed() {
-  jq -e '(.verdict == "passed" or .verdict == "skipped")
-         and ((.critic_verdict // "") | IN("revise", "unresolved") | not)' "$1/ci-gate.json" >/dev/null 2>&1
-}
-
-run_task_body() {
-  local kind="$1" number="$2" title="$3" body="$4"
-  local task_id
-  task_id="${kind}-${number}-$(date +%Y%m%d-%H%M%S)"
-  set_reply_target "$number" "${CURRENT_TASK_JSON:-}"
-  local branch
-  branch=$(task_branch "${CURRENT_TASK_JSON:-}" "$number")
-  local task_dir="$WORKTREES_DIR/$task_id"
-
-  # --retry では新しい worktree を作らず、前回の失敗が残したものを使う
-  local prev_dir="" prev_log=""
-  if (( ${RETRY:-0} )); then
-    prev_dir=$(find_leftover_task "$number")
-    if [[ -n $prev_dir ]]; then
-      task_dir="$prev_dir"
-      prev_log="$TASK_LOGS_DIR/${prev_dir##*/}"
-    else
-      warn "[$task_id] 引き継げる作業ツリーがないため、通常どおり新規に作成します"
-    fi
-  fi
-
-  local wt="$task_dir/repo"
-  local plan_file="$wt/$PLAN_FILE_NAME"
-  local replies_file="$wt/$REPLIES_FILE_NAME"
-  local question_file="$wt/$QUESTION_FILE_NAME"
-  # --retry で引き継いだ作業ツリーには前回の返信と質問と方針が残っている
-  rm -f "$replies_file" "$question_file" "$wt/$NOTE_FILE_NAME" "$wt/$NO_SPLIT_FILE_NAME"
-  local log_dir="$TASK_LOGS_DIR/$task_id"
-  mkdir -p "$log_dir"
-  TASK_OUTCOME_FILE="$log_dir/outcome.json"
-  TASK_PHASE_FILE="$log_dir/$PHASE_FILE_NAME"
-  [[ -n ${CURRENT_TASK_JSON:-} ]] \
-    && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$CURRENT_TASK_JSON" \
-      > "$log_dir/$TASK_FILE_NAME"
-  task_phase prepare
-
-  # --ignore-budget ではゲートを通らず USAGE_5H が空になるため取り直す
-  local pct_before="$USAGE_5H"
-  [[ -z $pct_before ]] && parse_usage "$(fetch_usage)" && pct_before="$USAGE_5H"
-
-  # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
-  LAST_TASK_OPENED_PR=0
-
-  log "[$task_id] 開始: #$number $title"
-  set_labels "$number" "$LABEL_RUNNING"
-
-  local ok=0
-  if [[ -n $prev_dir ]]; then
-    log "[$task_id] 前回の作業ツリーを引き継ぎます: $(agent_relpath "$prev_dir")"
-    resume_workspace "$branch" "$task_dir" && ok=1
-  else
-    create_workspace "$branch" "$task_dir" && ok=1
-  fi
-  if (( ! ok )); then
-    fail_task "$task_id" "worktree の準備に失敗しました"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "エージェントの作業ツリー準備に失敗しました。ブランチ \`$branch\` が使用中でないか確認してください。"
-    return 1
-  fi
-
-  if [[ -n $SETUP_CMD ]]; then
-    local setup_log="$log_dir/setup.log" setup_rc=0
-    log "[$task_id] 依存を準備します: $SETUP_CMD"
-    run_setup "$wt" "$setup_log" || setup_rc=$?
-    if (( setup_rc )); then
-      fail_task "$task_id" "依存の準備に失敗しました (exit=$setup_rc)"
-      [[ -s $setup_log ]] && warn "$(tail -20 "$setup_log")"
-      set_labels "$number" "$LABEL_FAILED"
-      post_report "$(printf '依存の準備コマンドが失敗しました (exit=%s%s)。\n\n```\n%s\n```\n\n```\n%s\n```\n\nログ: `%s`' \
-        "$setup_rc" "$( (( setup_rc == 124 )) && printf ': %s で打ち切り' "$SETUP_TIMEOUT" )" \
-        "$SETUP_CMD" "$(tail -20 "$setup_log")" "$(agent_relpath "$setup_log")")"
-      log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-      return 1
+  cp=$(checkpoint_get)
+  if [[ -n $cp && $(jq -r '.prompt_hash // ""' <<<"$cp") == "$TASK_SYS_HASH" ]]; then
+    resume_id=$(jq -r '.session_id' <<<"$cp")
+    base_cost=$(jq -r '.cost_usd // 0' <<<"$cp")
+    if [[ $state == triage-* && -n $TASK_MEMORY && $(jq -r '.memory_hash // ""' <<<"$cp") != "$TASK_MEMORY_HASH" ]]; then
+      body+=$'\n\n'"$TASK_MEMORY"
     fi
   fi
 
   if ! AGENT_GH_TOKEN=$(app_token_with "$AGENT_TOKEN_PERMISSIONS"); then
-    fail_task "$task_id" "エージェント用のトークンを取得できませんでした。App に Actions: Read が付与されているか確認してください"
-    set_labels "$number" "$LABEL_FAILED"
+    TASK_FAIL_REASON="エージェント用のトークンを取得できませんでした。App に Actions: Read が付与されているか確認してください"
     return 1
   fi
 
-  # 再開時にタスク分解へ逸れると、やりかけの変更が宙に浮く
-  local no_decompose=0 decompose_off=""
-  if [[ -n $prev_dir ]]; then
-    no_decompose=1
-    decompose_off="これは中断したタスクの再開なので、残っている作業を仕上げる。"
-  elif is_sub_issue "$number" "$body"; then
-    no_decompose=1
-    decompose_off="この Issue は既に分解されたタスクの一部なので、"
-  fi
+  local now limit budget
+  now=$(date +%s)
+  limit=$(( TASK_DEADLINE - now ))
+  (( limit >= MIN_CALL_SECONDS )) || limit=$MIN_CALL_SECONDS
+  budget=$(jq -n --argjson m "$MAX_TASK_BUDGET_USD" --argjson c "$TASK_COST" '[$m - $c, 0.01] | max')
+  env_args=(MOPU_PHASE="$state" MOPU_HEAD_START="$head_start" MOPU_HAS_PR="$([[ -n $TASK_PR ]] && echo 1 || echo 0)"
+            MOPU_PR_OURS="$TASK_PR_OURS" MOPU_COMMENT_IDS="$TASK_COMMENT_IDS" MOPU_MAX_SUB_ISSUES="$MAX_SUB_ISSUES")
 
-  local sys_prompt memory
-  sys_prompt=$(build_system_prompt "$kind" "$branch" "$wt" "$decompose_off")
-  memory=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH")
-  if [[ -n $memory ]]; then
-    sys_prompt+=$'\n\n'"$memory"
-    printf '%s\n' "$memory" > "$log_dir/project-memory.md"
-    log "[$task_id] 対象リポジトリの指示を ${#memory} 文字足します: $(agent_relpath "$log_dir/project-memory.md")"
-  fi
+  printf '%s\n' "$body" > "$TASK_LOG/prompt-$(printf '%02d' "$TASK_CALLS")-$state.md"
+  (( TASK_CALLS++ ))
+  lines_before=0
+  [[ -f $TASK_LOG/stream.jsonl ]] && lines_before=$(wc -l < "$TASK_LOG/stream.jsonl")
+  jq -nc --arg s "$state" --arg r "$resume_id" '{type: "system", subtype: "mopu_state", state: $s, resume: $r}' >> "$TASK_LOG/stream.jsonl"
+  [[ -n $resume_id ]] && log "[$TASK_ID] $state: 会話 $resume_id を再開します"
+  invoke_agent "$TASK_DIR" "$TASK_LOG" "$body" "$TASK_SYS_PROMPT" "$TASK_SETTINGS" "$resume_id" "$limit" "$budget" "${env_args[@]}" || rc=$?
 
-  local prompt pending_plan="" pr_before
-  prompt=$(build_prompt "$kind" "$number" "$title" "$body" "${CURRENT_TASK_JSON:-}")
-  pr_before=$(gh pr view "$branch" -R "$REPO" --json body 2>/dev/null)
-  [[ -n $pr_before ]] && prompt+=$'\n\n'"$(build_pr_context "$pr_before")"
-  [[ -n $prev_dir ]] && prompt+=$'\n\n'"$(build_retry_context "$prev_log" "$wt")"
-  if [[ $kind == comment ]] && (( ! no_decompose )) && pending_plan=$(latest_plan_comment "$number"); then
-    prompt+=$'\n\n'"$(build_pending_plan_context "$pending_plan")"
-  fi
-
-  local settings="$log_dir/settings.json"
-  build_agent_settings "$task_dir" "$settings" || return 1
-
-  # 既存ブランチを引き継いだ場合、既にあるコミットを「今回の成果」と誤認しないよう
-  # 実行前の HEAD を控えておく
-  local head_before
-  head_before=$(git -C "$wt" rev-parse HEAD)
-  # --retry で引き継いだコミットは push されていないので、今回の成果に含める。
-  # ここを実行前の HEAD にすると、前回コミットまで進んでいたタスクが
-  # 「コード変更なし」と判定されて push も PR 作成もされない
-  if [[ -n $prev_dir ]]; then
-    if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      head_before=$(git -C "$wt" rev-parse "origin/$branch")
-    else
-      head_before=$(git -C "$wt" merge-base HEAD "origin/$BASE_BRANCH")
-    fi
-  fi
-  GATE_HEAD_BEFORE="$head_before"
-
-  # 前回の会話を引き継ぐ条件。--retry は中断したタスクの再開、コメントは自分が
-  # 出した PR へのレビュー対応で、どちらも前回の続きになる
-  local resume_id="" resume_file="$log_dir/$RESUME_FILE_NAME"
-  if (( ${RETRY:-0} )) || [[ $kind == comment ]]; then
-    resume_id=$(session_of_issue "$number")
-    if [[ -n $resume_id ]]; then
-      log "[$task_id] 前回の会話を再開します: $resume_id"
-      jq -nc --arg s "$resume_id" --argjson c "$(session_cost_of_issue "$number")" \
-        '{session_id: $s, base_cost_usd: $c}' > "$resume_file"
-    fi
-  fi
-
-  local rc=0
-  task_phase triage
-  invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "$resume_id" || rc=$?
-
-  # 保持期間を過ぎた会話は再開できない。この失敗は課金ゼロで即座に返るので、
-  # 会話なしでやり直す。前回の情報はプロンプト側にも入っているため、
-  # 再開できなくてもタスク自体は成立する
+  # 保持期間を過ぎた会話は再開できない。この失敗は課金ゼロで即座に返るので、会話なしでやり直す
   if [[ -n $resume_id ]] && (( rc != 0 )) \
-    && grep -q 'No conversation found with session ID' "$log_dir/stderr.log" 2>/dev/null
+    && tail -n 5 "$TASK_LOG/stderr.log" 2>/dev/null | grep -q 'No conversation found with session ID'
   then
-    warn "[$task_id] 会話 $resume_id が見つかりません。新しい会話で実行します"
-    forget_session "$number"
-    resume_id=""
-    rm -f "$resume_file"
-    rc=0
-    invoke_agent "$task_dir" "$log_dir" "$prompt" "$sys_prompt" "$settings" "$branch" "" || rc=$?
+    warn "[$TASK_ID] 会話 $resume_id が見つかりません。新しい会話で実行します"
+    checkpoint_forget "$TASK_NUMBER"
+    resume_id="" base_cost=0 rc=0
+    invoke_agent "$TASK_DIR" "$TASK_LOG" "$body"$'\n\n'"$TASK_MEMORY" "$TASK_SYS_PROMPT" "$TASK_SETTINGS" "" "$limit" "$budget" "${env_args[@]}" || rc=$?
   fi
 
-  local result is_error session_cost cost
-  result=$(last_result "$log_dir/stream.jsonl")
-  is_error=$(jq -r 'select(.type=="result") | .is_error' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
-  session_cost=$(jq -r 'select(.type=="result") | .total_cost_usd // 0' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
-  cost=$(jq -rn --argjson c "${session_cost:-0}" --argjson b "$(jq '.base_cost_usd // 0' "$resume_file" 2>/dev/null || echo 0)" \
-    '[$c - $b, 0] | max')
-  # critic は別の claude -p なので、エージェントの total_cost_usd にも --max-budget-usd にも入らない
-  [[ -s $log_dir/ci-gate.json ]] \
-    && cost=$(jq -r --argjson c "${cost:-0}" '$c + (.critic_cost_usd // 0)' "$log_dir/ci-gate.json")
+  local result session_id total is_error subtype rl_status
+  result=$(tail -n +"$(( lines_before + 1 ))" "$TASK_LOG/stream.jsonl" | jq -c 'select(.type == "result")' 2>/dev/null | tail -1)
+  session_id=$(jq -r '.session_id // empty' <<<"$result" 2>/dev/null)
+  total=$(jq -r '.total_cost_usd // 0' <<<"$result" 2>/dev/null)
+  is_error=$(jq -r '.is_error // empty' <<<"$result" 2>/dev/null)
+  subtype=$(jq -r '.subtype // empty' <<<"$result" 2>/dev/null)
+  # 再開した会話の total_cost_usd は再開元の分を含む
+  TASK_COST=$(jq -n --argjson a "$TASK_COST" --argjson t "${total:-0}" --argjson b "$base_cost" '$a + ([$t - $b, 0] | max)')
 
-  local subtype session_id
-  subtype=$(jq -r 'select(.type=="result") | .subtype' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
-  session_id=$(jq -r 'select(.type=="result") | .session_id // empty' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
-
-  # 打ち切りで終わった会話を引き継ぐと、膨らんだ context のまま再開して同じ壁に
-  # ぶつかる。timeout(1) の 124 と --max-budget-usd による打ち切りがこれにあたる
-  if (( rc == 124 )) || [[ $subtype == error_max_budget_usd ]]; then
-    warn "[$task_id] 打ち切りで終わったため、この会話は引き継ぎません (${subtype:-timeout})"
-    forget_session "$number"
-  else
-    record_session "$number" "$session_id" "$session_cost"
-  fi
-
-  # 枠の非常ブレーキ。allowed_warning / rejected を検知したら呼び出し元に伝える
-  local rl_status
-  rl_status=$(jq -r 'select(.type=="rate_limit_event") | .rate_limit_info.status' "$log_dir/stream.jsonl" 2>/dev/null | tail -1)
+  rl_status=$(tail -n +"$(( lines_before + 1 ))" "$TASK_LOG/stream.jsonl" \
+    | jq -r 'select(.type == "rate_limit_event") | .rate_limit_info.status' 2>/dev/null | tail -1)
   if [[ $rl_status == allowed_warning || $rl_status == rejected ]]; then
-    warn "[$task_id] レート上限イベント: $rl_status"
+    warn "[$TASK_ID] レート上限イベント: $rl_status"
     # shellcheck disable=SC2034  # poll.sh のループが参照
     RATE_LIMIT_HIT=1
   fi
 
-  if (( rc != 0 )) || [[ $is_error == true ]]; then
-    fail_task "$task_id" "エージェントの実行に失敗しました (exit=$rc, is_error=$is_error)"
-    local detail
-    detail=$(tail -20 "$log_dir/stderr.log")
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "$(printf 'エージェントの実行に失敗しました (exit=%s)。\n\n%s\n\n```\n%s\n```\n\nログ: `%s`' \
-      "$rc" "${result:-}" "${detail:-（stderr なし）}" "$(agent_relpath "$log_dir")")"
-    record_spend "$task_id" "$cost" "$pct_before" "" failed
-    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+  if (( rc != 0 )) || [[ -z $result || $is_error == true ]]; then
+    TASK_FAIL_REASON="エージェントの実行に失敗しました (exit=$rc${subtype:+, $subtype})"
+    (( rc == 124 )) && TASK_FAIL_REASON="時間制限（残り ${limit} 秒）で打ち切りました"
+    return 1
+  fi
+  if ! verify_workspace "$TASK_WT"; then
+    TASK_FAIL_REASON="worktree の .git が書き換えられています"
+    return 1
+  fi
+  local problem
+  problem=$(export "${env_args[@]}"; outcome_problem "$state" "$TASK_WT")
+  if [[ -n $problem ]]; then
+    TASK_FAIL_REASON="終える条件を満たしませんでした: $problem"
     return 1
   fi
 
-  if ! verify_workspace "$wt"; then
-    fail_task "$task_id" "worktree の .git が書き換えられています"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "$(printf 'worktree の `.git` が書き換えられていたため、push せずに止めました。\n\nworktree: `%s`' "$(agent_relpath "$wt")")"
-    record_spend "$task_id" "$cost" "$pct_before" "" failed
-    log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-    return 1
-  fi
+  TASK_OUTCOME=$(jq -c . "$TASK_WT/$OUTCOME_FILE_NAME")
+  rm -f "$TASK_WT/$OUTCOME_FILE_NAME"
+  checkpoint_set "$session_id" "$total"
+  return 0
+}
 
-  if [[ -f $plan_file ]]; then
-    if (( no_decompose )); then
-      warn "[$task_id] 分解済みタスクなので $PLAN_FILE_NAME を無視します"
-      rm -f "$plan_file"
+# --- 本文の材料 ---
+
+task_material() {
+  {
+    if [[ $TASK_KIND == comment ]]; then
+      local n i
+      n=$(jq '(.comments // []) | length' <<<"$TASK_JSON")
+      echo "## 今回のコメント（$n 件）"
+      echo
+      for (( i = 0; i < n; i++ )); do
+        printf '### コメント %s\n\n' "$(jq -r ".comments[$i].id" <<<"$TASK_JSON")"
+        jq -r ".comments[$i].url // empty" <<<"$TASK_JSON" | sed '/^$/d;s/$/\n/'
+        echo '```'
+        jq -r ".comments[$i].instruction" <<<"$TASK_JSON"
+        echo '```'
+        echo
+      done
+      echo "## 背景: #$TASK_NUMBER「$TASK_TITLE」の本文"
     else
-      propose_plan "$task_id" "$number" "$plan_file" "$cost" "$pct_before" "$task_dir"
-      return $?
+      echo "## Issue #$TASK_NUMBER「$TASK_TITLE」の本文"
     fi
-  fi
+    echo
+    echo '```'
+    printf '%s\n' "${TASK_BODY:-(本文なし)}"
+    echo '```'
+    if [[ $TASK_KIND == comment ]]; then
+      local history
+      history=$(render_history "$TASK_JSON")
+      [[ -n $history ]] && printf '\n## 背景: その後のやり取り（古い順）\n\n%s\n' "$history"
+    fi
+  } | head -c 60000
+}
 
-  if [[ -s $question_file ]]; then
-    ask_user "$task_id" "$number" "$question_file" "$wt" "$branch" "$head_before" "$cost" "$pct_before" "$task_dir"
-    return $?
+pr_material() {
+  [[ -n $TASK_PR ]] || return 0
+  echo "## 作業先の PR #$(pr_number)"
+  echo
+  if (( TASK_PR_OURS )); then
+    echo "mopu-agent が作った PR で、今の本文は次のとおり。"
+  else
+    echo "mopu-agent 以外が作った PR で、本文は次のとおり。"
   fi
+  echo
+  md_quote "$(jq -r '.body // ""' <<<"$TASK_PR")"
+  echo
+}
 
-  if [[ $(git -C "$wt" rev-parse HEAD) == "$head_before" ]]; then
-    if [[ -n $(git -C "$wt" status --porcelain) ]]; then
-      fail_task "$task_id" "コミットされていない変更が残っています"
-      set_labels "$number" "$LABEL_FAILED"
-      post_report "$(printf '%s\n\nコミットに失敗した可能性があります。作業ツリーに未コミットの変更が残っているため保全しました。\n\nworktree: `%s`' \
-        "${result:-（応答なし）}" "$(agent_relpath "$wt")")"
-      record_spend "$task_id" "$cost" "$pct_before" "" failed
-      log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
+phase_header() {
+  printf '# フェーズ: %s\n\nこのメッセージは mopu-agent からの、このフェーズの指示です。' "$1"
+}
+
+prompt_file() { cat "$AGENT_DIR/prompts/$1"; }
+
+# --- state ---
+
+# 作業ツリーを作る起点。チェックポイントのコミットに自分のコミットがあり、push 済みのコミットを
+# 捨てずに済むならそこから、そうでなければ push 済みのブランチか、ベースから
+workspace_start() {
+  local cp_head remote="" base="origin/$BASE_BRANCH"
+  git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$TASK_BRANCH" && remote="origin/$TASK_BRANCH"
+  cp_head=$(jq -r '.head // empty' <<<"$(checkpoint_get)" 2>/dev/null)
+  if [[ -n $cp_head ]] && git -C "$REPO_DIR" cat-file -e "$cp_head^{commit}" 2>/dev/null \
+    && ! git -C "$REPO_DIR" merge-base --is-ancestor "$cp_head" "$base" \
+    && { [[ -z $remote ]] || git -C "$REPO_DIR" merge-base --is-ancestor "$remote" "$cp_head"; }
+  then
+    printf '%s' "$cp_head"
+  else
+    printf '%s' "${remote:-$base}"
+  fi
+}
+
+state_prepare() {
+  local start
+  start=$(workspace_start)
+  if ! create_workspace "$TASK_BRANCH" "$TASK_DIR" "$start"; then
+    TASK_FAIL_REASON="作業ツリーの準備に失敗しました。ブランチ \`$TASK_BRANCH\` が使用中でないか確認してください"
+    return 1
+  fi
+  if [[ -n $SETUP_CMD ]]; then
+    local setup_rc=0
+    log "[$TASK_ID] 依存を準備します: $SETUP_CMD"
+    run_setup "$TASK_WT" "$TASK_LOG/setup.log" || setup_rc=$?
+    if (( setup_rc )); then
+      TASK_FAIL_REASON="依存の準備コマンドが失敗しました (exit=$setup_rc$( (( setup_rc == 124 )) && printf ': %s で打ち切り' "$SETUP_TIMEOUT" ))"
       return 1
     fi
+  fi
+  TASK_SETTINGS="$TASK_LOG/settings.json"
+  build_agent_settings "$TASK_DIR" "$TASK_SETTINGS" || { TASK_FAIL_REASON="エージェントの設定を作れませんでした"; return 1; }
+  TASK_NEXT=$TASK_FIRST
+}
 
-    log "[$task_id] コード変更なし。結果のみコメントします"
-    if [[ -n $pending_plan ]]; then
-      task_phase awaiting-approval
-      set_labels "$number" "$LABEL_AWAITING"
-    else
-      task_phase answered "" "$(lead_quote "$result")"
-      set_labels "$number" "$LABEL_DONE"
+# 入口は Issue の状態で決める。上から順に当てはめる
+dispatch_entry() {
+  if [[ $TASK_KIND == issue ]]; then
+    printf 'triage-new'
+    return
+  fi
+  local labels
+  labels=$(gh issue view "$TASK_NUMBER" -R "$REPO" --json labels --jq '.labels[].name' 2>/dev/null)
+  if grep -qxF -- "$LABEL_AWAITING" <<<"$labels"; then
+    printf 'triage-plan'
+  elif grep -qxF -- "$LABEL_AWAITING_INPUT" <<<"$labels"; then
+    printf 'triage-reply'
+  elif [[ -n $TASK_PR ]] && (( TASK_PR_OURS )); then
+    printf 'triage-review'
+  elif [[ -n $TASK_PR ]]; then
+    printf 'triage-foreign'
+  else
+    printf 'triage-request'
+  fi
+}
+
+state_triage() {
+  local entry="${TASK_STATE#triage-}" body plan
+  body=$(
+    phase_header "1. 把握（$TASK_STATE）"
+    printf '\n\n'
+    prompt_file triage.md
+    printf '\n'
+    prompt_file "triage/$entry.md"
+    if [[ -z $TASK_PR ]]; then
+      printf '\n'
+      sed "s/%%MAX_SUB_ISSUES%%/$MAX_SUB_ISSUES/g" "$AGENT_DIR/prompts/decompose.md"
     fi
-    post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "${result:-（応答なし）}" ""
-    record_spend "$task_id" "$cost" "$pct_before" "" no-change
-    remove_workspace "$task_dir"
+    [[ $TASK_KIND == comment ]] && { printf '\n'; prompt_file replies.md; }
+    printf '\n'
+    task_material
+    printf '\n'
+    pr_material
+    if [[ $entry == plan ]] && plan=$(latest_plan_comment "$TASK_NUMBER"); then
+      printf '\n## 承認待ちの分解案\n\n```json\n%s\n```\n' "$(plan_from_comment "$plan")"
+    fi
+  )
+  call_agent "$TASK_STATE" "$body" || return 1
+  printf '%s\n' "$TASK_OUTCOME" > "$TASK_LOG/triage.json"
+
+  case $(jq -r '.decision' <<<"$TASK_OUTCOME") in
+    implement)
+      withdraw_plan "$TASK_NUMBER"
+      TASK_NEXT=implement
+      ;;
+    decompose)
+      jq '.plan' <<<"$TASK_OUTCOME" > "$TASK_LOG/plan.json"
+      withdraw_plan "$TASK_NUMBER"
+      post_task_report "$(render_plan_comment "$TASK_LOG/plan.json")"
+      post_replies "$TASK_OUTCOME"
+      TASK_END=awaiting-approval
+      TASK_END_DETAIL="分解案 $(jq '.sub_issues | length' "$TASK_LOG/plan.json") 件"
+      ;;
+    ask) end_with_question ;;
+    answer)
+      if [[ $TASK_KIND == comment ]]; then
+        post_replies "$TASK_OUTCOME"
+      else
+        post_task_report "$(jq -r '.answer' <<<"$TASK_OUTCOME")"
+      fi
+      TASK_END=answered
+      TASK_END_BODY=$(lead_quote "$(jq -r '.answer' <<<"$TASK_OUTCOME")")
+      ;;
+  esac
+}
+
+end_with_question() {
+  if [[ $TASK_KIND == comment ]]; then
+    post_replies "$TASK_OUTCOME" "$(answer_footer)"
+  else
+    post_task_report "$(jq -r '.question' <<<"$TASK_OUTCOME")"$'\n\n---\n'"$(answer_footer)"
+  fi
+  TASK_END=awaiting-input
+  TASK_END_BODY=$(lead_quote "$(jq -r '.question' <<<"$TASK_OUTCOME")")
+}
+
+state_implement() {
+  local note body
+  note=$(jq -r '.note // ""' "$TASK_LOG/triage.json" 2>/dev/null)
+  task_phase implement "" "${note:+$(md_quote "$note")}"
+  body=$(
+    phase_header "2. 実装"
+    printf '\n\n'
+    prompt_file implement.md
+    if [[ -n $SETUP_CMD ]]; then
+      local text
+      text=$(prompt_file setup.md)
+      printf '\n%s\n' "${text//"%%SETUP_CMD%%"/"$SETUP_CMD"}"
+    fi
+    if [[ $CONTAINER_CHECKS != '[]' ]]; then
+      printf '\n'
+      sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$AGENT_DIR/prompts/container.md"
+      jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS"
+    fi
+    [[ -n $note ]] && printf '\n## 把握で決めた方針\n\n%s\n' "$note"
+  )
+  call_agent implement "$body" || return 1
+  if [[ $(jq -r '.decision' <<<"$TASK_OUTCOME") == ask ]]; then
+    push_task_branch || return 1
+    end_with_question
     return 0
   fi
+  TASK_NEXT=verify
+}
 
-  log "[$task_id] push します: $branch"
-  if ! push_workspace "$wt" "$branch"; then
-    fail_task "$task_id" "push に失敗しました"
-    set_labels "$number" "$LABEL_FAILED"
-    post_report "作業は完了しましたが push に失敗しました。worktree: \`$(agent_relpath "$wt")\`"
-    record_spend "$task_id" "$cost" "$pct_before" "" failed
-    return 1
-  fi
+# 使い方: run_fix <本文の材料>
+# 戻り値 0 で TASK_FIX に done / ask / give_up が入る
+run_fix() {
+  local body
+  task_phase verify fix
+  body=$(
+    phase_header "3. 検証の修正"
+    printf '\n\n'
+    prompt_file fix.md
+    printf '\n%s\n' "$1"
+  )
+  call_agent fix "$body" || return 1
+  TASK_FIX=$(jq -r '.decision' <<<"$TASK_OUTCOME")
+}
 
-  # PR は検証を通るまで draft にしておき、通ったときだけ ready にしてレビューを依頼する。
-  # mopu-agent の PR は、最終メッセージがベースからの差分全体の説明なので、毎回本文を置き換える。
-  # 人が書いた PR の本文は書き換えず、検証を通らなければ draft に戻すだけにする
-  local reviewed=""
-  [[ $(jq -r '.critic_verdict // empty' "$log_dir/ci-gate.json" 2>/dev/null) == approve ]] && reviewed="レビュアー承認"
-  task_phase publish "$reviewed"
-  local pr_json pr_url pr_out pr_draft pr_ours=0 body_written=0 gate pr_body passed=0 ok=1
-  gate_passed "$log_dir" && passed=1
-  gate=$(ci_gate_report "$log_dir")
-  pr_body=$(printf 'Closes #%s\n\n%s\n\n---\n%s' "$number" "$result" "$COMMENT_MARKER")
-  pr_json=$(gh pr view "$branch" -R "$REPO" --json url,isDraft,body 2>/dev/null)
-  pr_url=$(jq -r '.url // empty' <<<"$pr_json" 2>/dev/null)
-  pr_draft=$(jq -r '.isDraft // empty' <<<"$pr_json" 2>/dev/null)
-  is_our_pr "$pr_json" && pr_ours=1
-  if [[ -n $pr_url ]] && (( pr_ours )); then
-    if gh pr edit "$branch" -R "$REPO" --body "$pr_body" >/dev/null; then
-      body_written=1
-    else
-      warn "[$task_id] PR の本文を書き換えられませんでした: $pr_url"
-    fi
-    if [[ $pr_draft == true ]] && (( passed )); then
-      if gh pr ready "$branch" -R "$REPO" >/dev/null; then
-        request_review "$task_id" "$branch"
-      else
-        warn "[$task_id] draft PR を出せませんでした: $pr_url"
-        ok=0
+state_verify() {
+  local ci_rounds=0 critic_rounds=0 ci review material
+  printf '{}\n' > "$TASK_LOG/verify.json"
+  while :; do
+    refresh_app_token
+    task_phase verify push
+    push_task_branch || return 1
+    task_phase verify ci
+    wait_ci
+    ci=$(jq -r '.ci.verdict' "$TASK_LOG/verify.json")
+
+    if [[ $ci == failed ]]; then
+      (( ++ci_rounds ))
+      verify_update '.ci_rounds = $n' --argjson n "$ci_rounds"
+      if (( ci_rounds > CI_MAX_FIX_ROUNDS )); then
+        verify_end "CI が ${CI_MAX_FIX_ROUNDS} 回直しても落ちたまま: $(jq -r '.ci.detail' "$TASK_LOG/verify.json")"
+        return 0
       fi
-    elif [[ $pr_draft != true ]] && (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
-      warn "[$task_id] 検証を通らなかった PR を draft に戻せませんでした: $pr_url"
-    fi
-  elif [[ -n $pr_url ]]; then
-    if [[ $pr_draft != true ]] && (( ! passed )) && ! gh pr ready --undo "$branch" -R "$REPO" >/dev/null 2>&1; then
-      warn "[$task_id] 検証を通らなかった PR を draft に戻せませんでした: $pr_url"
-    fi
-  else
-    local -a draft_args=()
-    (( passed )) || draft_args=(--draft)
-    if pr_out=$(gh pr create -R "$REPO" "${draft_args[@]}" \
-      --base "$BASE_BRANCH" --head "$branch" \
-      --title "$title" \
-      --body "$pr_body" 2>&1)
-    then
-      pr_url=$(grep -oE 'https://[^ ]+/pull/[0-9]+' <<<"$pr_out" | tail -1)
-      body_written=1
-      (( passed )) && request_review "$task_id" "$branch"
+      notify_task "$TASK_LOG" "CI が落ちました（${ci_rounds}/${CI_MAX_FIX_ROUNDS} 回目）: $(jq -r '.ci.detail' "$TASK_LOG/verify.json")"
+      material=$(
+        echo "## CI が落ちた（${ci_rounds}/${CI_MAX_FIX_ROUNDS} 回目）"
+        echo
+        jq -r '.ci.runs[] | "- run \(.id)「\(.name)」: \(.conclusion)（\(.url)、コミット \(.head_sha[0:7])）"' "$TASK_LOG/verify.json"
+      )
+      run_fix "$material" || return 1
+    elif [[ $ci == timeout ]]; then
+      verify_end "$(jq -r '.ci.detail' "$TASK_LOG/verify.json")"
+      return 0
     else
-      fail_task "$task_id" "PR の作成に失敗しました: $pr_out"
-      set_labels "$number" "$LABEL_FAILED"
-      post_report "$(printf 'ブランチ `%s` は push 済みですが、PR の作成に失敗しました。\n\n```\n%s\n```' "$branch" "$pr_out")"
-      record_spend "$task_id" "$cost" "$pct_before" "" failed
-      return 1
+      task_phase verify critic
+      run_critic
+      review=$(jq -r '.critic.verdict' "$TASK_LOG/verify.json")
+      case $review in
+        approve)
+          if [[ $ci == passed || $ci == skipped ]]; then
+            verify_end ""
+          else
+            verify_end "CI 未検証: $(jq -r '.ci.detail' "$TASK_LOG/verify.json")"
+          fi
+          return 0
+          ;;
+        revise)
+          (( ++critic_rounds ))
+          verify_update '.critic_rounds = $n' --argjson n "$critic_rounds"
+          if (( critic_rounds > CRITIC_MAX_ROUNDS )); then
+            verify_end "レビュアー（critic）の指摘が ${CRITIC_MAX_ROUNDS} 回直しても残った"$'\n'"$(jq -r '.critic.reasons | map("- \(.)") | join("\n")' "$TASK_LOG/verify.json")"
+            return 0
+          fi
+          notify_task "$TASK_LOG" "レビュアーが差し戻しました（${critic_rounds}/${CRITIC_MAX_ROUNDS} 回目）"
+          material=$(
+            echo "## レビュアー（critic）の差し戻し（${critic_rounds}/${CRITIC_MAX_ROUNDS} 回目）"
+            echo
+            echo "この会話を共有しない別のレビュアーが diff を確かめ、次の点を指摘した。"
+            echo
+            jq -r '.critic.reasons | map("- \(.)") | join("\n")' "$TASK_LOG/verify.json"
+          )
+          run_fix "$material" || return 1
+          ;;
+        *)
+          verify_end "レビュアー（critic）が判定できなかった: $(jq -r '.critic.reasons[0] // ""' "$TASK_LOG/verify.json")"
+          return 0
+          ;;
+      esac
+    fi
+
+    case $TASK_FIX in
+      ask)
+        push_task_branch || return 1
+        end_with_question
+        return 0
+        ;;
+      give_up)
+        verify_end "エージェントが修正を諦めた: $(jq -r '.reason' <<<"$TASK_OUTCOME")"
+        return 0
+        ;;
+    esac
+  done
+}
+
+# 使い方: verify_end <未完了の理由（完了なら空）>
+verify_end() {
+  verify_update '.complete = ($r == "") | .reason = $r' --arg r "$1"
+  TASK_NEXT=report
+}
+
+state_report() {
+  local body verify_reason
+  verify_reason=$(jq -r '.reason // ""' "$TASK_LOG/verify.json" 2>/dev/null)
+  body=$(
+    phase_header "4. 公開（report）"
+    printf '\n\n'
+    sed "s|%%BASE_BRANCH%%|$BASE_BRANCH|g" "$AGENT_DIR/prompts/report.md"
+    if (( TASK_PR_OURS )); then
+      printf '\n### PR テンプレート\n\n```markdown\n'
+      prompt_file pr-body.md
+      printf '```\n'
+    else
+      printf '\n作業先の PR は mopu-agent 以外が作ったものなので、PR 本文（pr_body）は書かない。\n'
+    fi
+    [[ $TASK_KIND == comment ]] && { printf '\n'; prompt_file replies.md; printf '\n返信が要るコメント ID: %s\n' "$TASK_COMMENT_IDS"; }
+    printf '\n## 検証の結果\n\n'
+    if [[ -z $verify_reason ]]; then
+      echo "CI とレビュアーの確認を通った。"
+    else
+      echo "検証を終えられなかった。PR は draft のまま公開される。理由:"
+      echo
+      md_quote "$verify_reason"
+      echo
+    fi
+    printf '\n'
+    pr_material
+  )
+  call_agent report "$body" || return 1
+  printf '%s\n' "$TASK_OUTCOME" > "$TASK_LOG/report.json"
+  TASK_NEXT=publish
+}
+
+state_publish() {
+  local report complete reason marker pr
+  report=$(<"$TASK_LOG/report.json")
+  complete=$(jq -r '.complete // false' "$TASK_LOG/verify.json")
+  reason=$(jq -r '.reason // ""' "$TASK_LOG/verify.json")
+  load_task_pr
+  [[ -n $TASK_PR ]] || { TASK_FAIL_REASON="公開する PR が見つかりません"; return 1; }
+  pr=$(pr_number)
+  task_phase publish "$([[ $complete == true ]] && printf '検証済み' || printf 'draft')"
+
+  if (( TASK_PR_OURS )); then
+    gh pr edit "$pr" -R "$REPO" --body "$(pr_body_with_marker "$(jq -r '.pr_body' <<<"$report")")" >/dev/null \
+      || { TASK_FAIL_REASON="PR の本文を書き換えられませんでした"; return 1; }
+  fi
+  if [[ $complete == true ]]; then
+    if [[ $(jq -r '.isDraft' <<<"$TASK_PR") == true ]]; then
+      gh pr ready "$pr" -R "$REPO" >/dev/null || { TASK_FAIL_REASON="PR を ready にできませんでした"; return 1; }
+    fi
+    local out
+    out=$(gh pr edit "$pr" -R "$REPO" --add-reviewer "${REPO%%/*}" 2>&1) \
+      || warn "[$TASK_ID] レビュアー '${REPO%%/*}' を指定できませんでした: $out"
+  else
+    if [[ $(jq -r '.isDraft' <<<"$TASK_PR") != true ]]; then
+      gh pr ready --undo "$pr" -R "$REPO" >/dev/null 2>&1 || { TASK_FAIL_REASON="PR を draft に戻せませんでした"; return 1; }
+    fi
+    marker="<!-- mopu-agent:verify $(git -C "$TASK_WT" rev-parse HEAD) -->"
+    if ! already_posted issue "$pr" "$marker"; then
+      post_comment "$pr" "$(verify_comment "$reason")"$'\n\n'"$marker"
+    fi
+  fi
+  post_replies "$report"
+
+  if [[ $complete == true ]]; then
+    TASK_END=review
+    TASK_END_DETAIL="PR #$pr"
+    TASK_END_BODY="推定 \$$(printf '%.2f' "$TASK_COST")"
+  else
+    TASK_FAILED_STATE=verify
+    TASK_FAIL_REASON="検証を終えられなかったため、PR を draft のまま公開しました: ${reason%%$'\n'*}"
+  fi
+}
+
+verify_comment() {
+  printf '検証を終えられなかったため、この PR は draft のままにしています（レビューは依頼していません）。\n\n'
+  md_quote "$1"
+  local tests
+  tests=$(jq -r '(.test_changes // [])[] | "- `\(.)`"' "$TASK_LOG/verify.json" 2>/dev/null)
+  [[ -n $tests ]] && printf '\n\n**テストに関わる変更**（テストを弱めていないか確かめてください）:\n%s' "$tests"
+  return 0
+}
+
+# --- タスクの始まりと終わり ---
+
+# 使い方: run_task <kind:issue|comment> <issue番号> <タイトル> <本文>
+# タスク JSON は CURRENT_TASK_JSON から読む
+run_task() {
+  TASK_KIND="$1" TASK_NUMBER="$2" TASK_TITLE="$3" TASK_BODY="$4" TASK_JSON="${CURRENT_TASK_JSON:-}"
+  TASK_ID="${TASK_KIND}-${TASK_NUMBER}-$(date +%Y%m%d-%H%M%S)"
+  TASK_BRANCH=$(task_branch "$TASK_JSON" "$TASK_NUMBER")
+  TASK_DIR="$WORKTREES_DIR/$TASK_ID"
+  TASK_WT=$(workspace_repo "$TASK_DIR")
+  TASK_LOG="$TASK_LOGS_DIR/$TASK_ID"
+  TASK_COMMENT_IDS=$(jq -r '(.comments // []) | map(.id) | join(" ")' <<<"$TASK_JSON" 2>/dev/null)
+  TASK_COST=0 TASK_CALLS=0 TASK_FIX=""
+  TASK_STATE="" TASK_NEXT="" TASK_OUTCOME="" TASK_FAIL_REASON="" TASK_FAILED_STATE=""
+  TASK_END="" TASK_END_DETAIL="" TASK_END_BODY=""
+  TASK_DEADLINE=$(( $(date +%s) + $(duration_seconds "$TASK_TIMEOUT") ))
+  # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
+  LAST_TASK_OPENED_PR=0
+
+  load_task_pr
+  TASK_ENTRY=$(dispatch_entry)
+  TASK_FIRST=$TASK_ENTRY
+  if (( ${RETRY:-0} )); then
+    local prev failed f
+    prev=$(last_task_log "$TASK_NUMBER")
+    if [[ -n $prev ]] && failed=$(jq -er '.failed_state // empty' "$prev/outcome.json" 2>/dev/null); then
+      TASK_ENTRY=$(jq -r --arg e "$TASK_ENTRY" '.entry // $e' "$prev/outcome.json")
+      TASK_FIRST=$TASK_ENTRY
+      [[ $failed == prepare ]] || TASK_FIRST=$failed
+      mkdir -p "$TASK_LOG"
+      for f in "${CARRY_FILES[@]}"; do
+        [[ -f $prev/$f ]] && cp "$prev/$f" "$TASK_LOG/$f"
+      done
+      log "[$TASK_ID] 前回のタスク ${prev##*/} の $TASK_FIRST からやり直します"
+    else
+      warn "[$TASK_ID] やり直せる失敗が無いため、通常どおり始めます"
     fi
   fi
 
-  # shellcheck disable=SC2034  # poll.sh の同時進行ゲートが参照
-  LAST_TASK_OPENED_PR=1
+  mkdir -p "$TASK_LOG"
+  [[ -n $TASK_JSON ]] && jq -c --arg c "$AGENT_COMMIT" '. + {commit: $c}' <<<"$TASK_JSON" > "$TASK_LOG/$TASK_FILE_NAME"
 
-  local headline brief
-  if (( passed && ok )); then
-    brief=$(lead_quote "$result")
-    task_phase review "PR #${pr_url##*/}" "推定 \$$(printf '%.2f' "$cost")${brief:+$'\n'$brief}"
-    set_labels "$number" "$LABEL_DONE"
-    headline=$( [[ -z $pr_before ]] && printf 'PR を作成しました' || printf 'PR を更新しました' )
-  else
-    fail_task "$task_id" "検証を通らなかったため、PR を draft のまま止めました"
-    set_labels "$number" "$LABEL_FAILED"
-    headline='検証を通らなかったため、PR を draft のまま止めました（レビューは依頼していません）'
+  TASK_SYS_PROMPT=$(prompt_file agent.md)
+  TASK_SYS_HASH=$(sha256sum <<<"$TASK_SYS_PROMPT" | cut -c1-16)
+  TASK_MEMORY=$(project_memory_prompt "$REPO_DIR" "origin/$BASE_BRANCH")
+  TASK_MEMORY_HASH=$(sha256sum <<<"$TASK_MEMORY" | cut -c1-16)
+  if [[ -n $TASK_MEMORY ]]; then
+    printf '%s\n' "$TASK_MEMORY" > "$TASK_LOG/project-memory.md"
+    TASK_SYS_PROMPT+=$'\n\n'"$TASK_MEMORY"
   fi
-  # 人が書いた PR へのコミットでは最終メッセージが本文に載らないため、返信に含めないと応答が消える
-  local summary fallback=""
-  (( body_written )) || fallback="${result:-（応答なし）}"
-  summary="$headline: $pr_url"
-  [[ -s $wt/$NO_SPLIT_FILE_NAME ]] && summary+=$'\n\n'"分解しない理由: $(<"$wt/$NO_SPLIT_FILE_NAME")"
-  jq -e '.verdict == "passed" and .critic_verdict == "approve"' "$log_dir/ci-gate.json" >/dev/null 2>&1 \
-    || [[ -z $gate ]] || summary+=$'\n\n'"$gate"
-  post_replies "${CURRENT_TASK_JSON:-}" "$replies_file" "$fallback" "$summary"
+
+  TASK_PCT_BEFORE="$USAGE_5H"
+  [[ -z $TASK_PCT_BEFORE ]] && parse_usage "$(fetch_usage)" && TASK_PCT_BEFORE="$USAGE_5H"
+
+  log "[$TASK_ID] 開始: #$TASK_NUMBER $TASK_TITLE（$TASK_ENTRY）"
+  set_labels "$TASK_NUMBER" "$LABEL_RUNNING"
+
+  # implement・verify・publish は、記録に添える情報を持つので state の中で記録する
+  TASK_NEXT=prepare
+  while [[ -n $TASK_NEXT && -z $TASK_FAILED_STATE ]]; do
+    TASK_STATE=$TASK_NEXT
+    TASK_NEXT=""
+    case $TASK_STATE in
+      implement | verify | publish) ;;
+      *) task_phase "$TASK_STATE" ;;
+    esac
+    refresh_app_token
+    "state_${TASK_STATE%%-*}" || task_failed
+  done
+  if [[ -z $TASK_FAILED_STATE && -z $TASK_END ]]; then
+    TASK_FAIL_REASON="$TASK_STATE の後に進む state がありません"
+    task_failed
+  fi
+  finish_task
+}
+
+# 失敗した state を記録し、その state の途中の差分をログに残して報告する
+task_failed() {
+  TASK_FAILED_STATE=$TASK_STATE
+  err "[$TASK_ID] $TASK_STATE: $TASK_FAIL_REASON"
+  if [[ -d $TASK_WT ]] && verify_workspace "$TASK_WT"; then
+    {
+      git -C "$TASK_WT" log --format='commit %H %s' "$(jq -r '.head // empty' <<<"$(checkpoint_get)" 2>/dev/null || true)..HEAD" 2>/dev/null
+      git -C "$TASK_WT" status --short
+      git -C "$TASK_WT" diff HEAD
+    } > "$TASK_LOG/failed.diff" 2>/dev/null
+  fi
+  local body
+  body=$(printf 'エージェントの作業が `%s` で止まりました。\n\n%s\n\nログ: `%s`' \
+    "$TASK_STATE" "$(md_quote "$TASK_FAIL_REASON")" "$(agent_relpath "$TASK_LOG")")
+  [[ -s $TASK_LOG/setup.log && $TASK_STATE == prepare ]] && body+=$'\n\n```\n'"$(tail -20 "$TASK_LOG/setup.log")"$'\n```'
+  post_task_report "$body"
+}
+
+# ラベルは、タスクの終わりに待っているもので決める
+finish_task() {
+  local label=$LABEL_DONE spend
+  if latest_plan_comment "$TASK_NUMBER" >/dev/null; then
+    label=$LABEL_AWAITING
+  elif [[ $TASK_END == awaiting-input ]]; then
+    label=$LABEL_AWAITING_INPUT
+  elif [[ -n $TASK_FAILED_STATE ]]; then
+    label=$LABEL_FAILED
+  fi
+  set_labels "$TASK_NUMBER" "$label"
+
+  if [[ -n $TASK_FAILED_STATE ]]; then
+    task_phase failed "$TASK_FAIL_REASON"
+    spend=failed
+    [[ $TASK_FAILED_STATE == verify ]] && spend=draft
+  else
+    task_phase "$TASK_END" "$TASK_END_DETAIL" "$TASK_END_BODY"
+    case $TASK_END in
+      review) spend="pr" ;;
+      answered) spend=no-change ;;
+      awaiting-input) spend=question ;;
+      awaiting-approval) spend=plan ;;
+    esac
+  fi
+  jq -nc --argjson ok "$([[ -z $TASK_FAILED_STATE ]] && echo true || echo false)" \
+    --arg reason "$TASK_FAIL_REASON" --arg failed "$TASK_FAILED_STATE" --arg entry "$TASK_ENTRY" \
+    --arg end "$TASK_END" --argjson cost "$TASK_COST" \
+    '{ok: $ok, entry: $entry, cost_usd: $cost}
+     + (if $failed == "" then {end: $end} else {failed_state: $failed, reason: $reason} end)' > "$TASK_LOG/outcome.json"
 
   local pct_after=""
   parse_usage "$(fetch_usage)" && pct_after="$USAGE_5H"
-  if (( passed && ok )); then
-    record_spend "$task_id" "$cost" "$pct_before" "$pct_after" pr
-    remove_workspace "$task_dir"
-    log "[$task_id] 完了: $pr_url (推定 \$$(printf '%.2f' "$cost"), 5h枠 ${pct_before:-?}%→${pct_after:-?}%)"
-    return 0
-  fi
-  record_spend "$task_id" "$cost" "$pct_before" "$pct_after" draft
-  log "[$task_id] 作業ディレクトリを調査用に残します: $task_dir"
-  return 1
-}
-
-# 実装の途中で聞いた場合のコミットは、回答を受けた次の実行が引き継げるよう push しておく
-ask_user() {
-  local task_id="$1" number="$2" question="$3" wt="$4" branch="$5" head_before="$6" cost="$7" pct_before="$8" task_dir="$9"
-  local keep=0
-  if [[ $(git -C "$wt" rev-parse HEAD) != "$head_before" ]] && ! push_workspace "$wt" "$branch"; then
-    warn "[$task_id] 質問の前のコミットを push できませんでした"
-    keep=1
-  fi
-  [[ -n $(git -C "$wt" status --porcelain) ]] && keep=1
-
-  log "[$task_id] ユーザーに質問し、回答を待ちます"
-  task_phase awaiting-input "" "$(lead_quote "$(<"$question")")"
-  set_labels "$number" "$LABEL_AWAITING_INPUT"
-  post_report "$(printf '%s\n\n---\n回答は、行頭に `%s` を付けてコメントしてください。' "$(<"$question")" "$TRIGGER_COMMAND")"
-  record_spend "$task_id" "$cost" "$pct_before" "" question
-  if (( keep )); then
-    log "[$task_id] push していない変更があるため、作業ディレクトリを残します: $task_dir"
-  else
-    remove_workspace "$task_dir"
-  fi
-  return 0
+  record_spend "$TASK_ID" "$TASK_COST" "$TASK_PCT_BEFORE" "$pct_after" "$spend"
+  remove_workspace "$TASK_DIR"
+  log "[$TASK_ID] 終了: ${TASK_FAILED_STATE:+失敗（$TASK_FAILED_STATE）}${TASK_END} (推定 \$$(printf '%.2f' "$TASK_COST"), 5h枠 ${TASK_PCT_BEFORE:-?}%→${pct_after:-?}%)"
+  [[ -z $TASK_FAILED_STATE ]]
 }

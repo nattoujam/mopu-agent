@@ -646,6 +646,13 @@ def own_cost(path, total):
     return max(float(total) - float(base), 0.0)
 
 
+def read_json_file(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def task_phases(path):
     phases = []
     for line in read_text(path / "phases.jsonl").splitlines():
@@ -674,22 +681,25 @@ def task_summary(path):
         summary["kind"] = m.group(1)
         summary["number"] = int(m.group(2))
         summary["started_at"] = datetime.strptime(m.group(3) + m.group(4), "%Y%m%d%H%M%S").timestamp()
-    for line in reversed(read_text(stream, limit=512 * 1024).splitlines()):
+    results = []
+    for line in read_text(stream, limit=4 * 1024 * 1024).splitlines():
         if '"type":"result"' not in line:
             continue
         try:
             obj = json.loads(line)
         except ValueError:
             continue
-        if obj.get("type") != "result":
-            continue
-        summary["state"] = "error" if obj.get("is_error") else "success"
-        summary["subtype"] = obj.get("subtype")
-        summary["cost_usd"] = own_cost(path, obj.get("total_cost_usd"))
-        summary["duration_ms"] = obj.get("duration_ms")
-        summary["turns"] = obj.get("num_turns")
-        summary["result"] = (obj.get("result") or "")[:400]
-        break
+        if obj.get("type") == "result":
+            results.append(obj)
+    if results:
+        last = results[-1]
+        summary["state"] = "error" if last.get("is_error") else "success"
+        summary["subtype"] = last.get("subtype")
+        summary["cost_usd"] = own_cost(path, last.get("total_cost_usd"))
+        summary["duration_ms"] = sum(r.get("duration_ms") or 0 for r in results)
+        summary["turns"] = sum(r.get("num_turns") or 0 for r in results)
+        summary["calls"] = len(results)
+        summary["result"] = (last.get("result") or "")[:400]
     else:
         # stream.jsonl が無いのはエージェントを起動する前に打ち切られたとき
         # （依存の準備の失敗、worktree の準備の失敗）
@@ -698,6 +708,13 @@ def task_summary(path):
         outcome = json.loads(outcome_file.read_text())
     except (OSError, ValueError):
         outcome = {}
+    if isinstance(outcome.get("cost_usd"), (int, float)):
+        summary["cost_usd"] = float(outcome["cost_usd"])
+    for key in ("entry", "end", "failed_state"):
+        if outcome.get(key):
+            summary[key] = outcome[key]
+    if outcome.get("ok") is True:
+        summary["state"] = "success"
     if outcome.get("ok") is False:
         summary["failure"] = outcome.get("reason") or "失敗しました"
         if summary["state"] != "aborted":
@@ -788,6 +805,8 @@ def system_text(subtype, obj):
         )
     if subtype == "permission_denied":
         return f"{obj.get('tool_name', '?')}: {obj.get('message') or obj.get('decision_reason') or ''}".strip()
+    if subtype == "mopu_state":
+        return f"{obj.get('state', '?')}" + (f"（会話 {obj['resume']} を再開）" if obj.get("resume") else "（新しい会話）")
     if subtype == "vcs_state_changed":
         return " ".join(f"{k}={obj.get(k)}" for k in ("kind", "branch") if obj.get(k))
     drop = {"type", "subtype", "uuid", "session_id"}
@@ -838,6 +857,7 @@ def task_detail(path):
     return {
         "summary": task_summary(path),
         "phases": task_phases(path),
+        "verify": read_json_file(path / "verify.json"),
         "events": events[-300:],
         "stderr": read_text(path / "stderr.log", limit=64 * 1024),
         "setup": read_text(path / "setup.log", limit=64 * 1024),
@@ -1008,6 +1028,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(500, "state/settings.json が壊れています")
         if path == "/api/notify":
             return self._json(notify_view())
+        if path == "/api/states":
+            return self._send(200, (WEB_DIR.parent / "lib" / "states.json").read_bytes(), "application/json; charset=utf-8")
         if path == "/api/tasks":
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0].strip()
             dirs = [d for d in task_ids() if q in f"{d.parent.name}/{d.name}"]

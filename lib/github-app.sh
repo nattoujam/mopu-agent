@@ -83,6 +83,11 @@ app_bot_identity() {
   APP_BOT_EMAIL="${uid}+${slug}[bot]@users.noreply.github.com"
 }
 
+refresh_app_token() {
+  local tok
+  tok=$(app_token) && export GH_TOKEN="$tok"
+}
+
 setup_app_auth() {
   local tok
   tok=$(app_token) || die "GitHub App の認証に失敗しました"

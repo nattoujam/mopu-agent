@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016  # jq の式を単引用符で渡すため
-# tools/ci-gate から呼ばれ、変更を書いたエージェントとは会話を共有しない別の claude -p に
+# lib/verify.sh から呼ばれ、変更を書いたエージェントとは会話を共有しない別の claude -p に
 # 変更を確かめさせる。結果を {"verdict", "reasons", "cost_usd"} の JSON 1 行で stdout に出す。
 # diff や依頼の本文はエージェントや第三者が書いたものなので、critic にはツールを渡さず、設定は応答の言語だけを渡す。
 # hook と同じく sandbox の外で動くため、ツールが残っていると乗っ取られたときにホストで実行される
@@ -19,7 +19,7 @@ MAX_IMAGE_BYTES=$(( 1500 * 1024 ))
 
 wt="$MOPU_TASK_DIR/$REPO_SUBDIR"
 ref="origin/$MOPU_BASE_BRANCH"
-gate="$MOPU_LOG_DIR/ci-gate.json"
+gate="$MOPU_LOG_DIR/verify.json"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -47,7 +47,7 @@ fail() {
   echo
   echo "## CI の結果"
   echo
-  jq -r '"\(.verdict // "不明") \(.detail // "")"' "$gate" 2>/dev/null || echo "不明"
+  jq -r '"\(.ci.verdict // "不明") \(.ci.detail // "")"' "$gate" 2>/dev/null || echo "不明"
   echo
   echo "## テストに関わる変更"
   echo

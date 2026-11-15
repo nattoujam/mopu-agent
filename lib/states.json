@@ -1,0 +1,35 @@
+{
+  "phases": [
+    { "label": "準備", "states": [
+      { "id": "prepare", "label": "prepare", "by": "code" }
+    ] },
+    { "label": "1. 把握", "states": [
+      { "id": "triage-new", "label": "新しい依頼", "by": "llm" },
+      { "id": "triage-request", "label": "コメントでの依頼", "by": "llm" },
+      { "id": "triage-reply", "label": "質問への回答", "by": "llm" },
+      { "id": "triage-plan", "label": "分解案への返答", "by": "llm" },
+      { "id": "triage-review", "label": "自分の PR への指示", "by": "llm" },
+      { "id": "triage-foreign", "label": "他人の PR への指示", "by": "llm" }
+    ] },
+    { "label": "2. 実装", "states": [
+      { "id": "implement", "label": "implement", "by": "llm" }
+    ] },
+    { "label": "3. 検証", "states": [
+      { "id": "verify:push", "label": "push・draft PR", "by": "code" },
+      { "id": "verify:ci", "label": "CI 待ち", "by": "code" },
+      { "id": "verify:critic", "label": "critic", "by": "code" },
+      { "id": "verify:fix", "label": "fix", "by": "llm" }
+    ] },
+    { "label": "4. 公開", "states": [
+      { "id": "report", "label": "report", "by": "llm" },
+      { "id": "publish", "label": "publish", "by": "code" }
+    ] }
+  ],
+  "ends": {
+    "review": { "label": "レビュー待ち", "tone": "ok" },
+    "answered": { "label": "回答済み", "tone": "ok" },
+    "awaiting-input": { "label": "回答待ち", "tone": "wait" },
+    "awaiting-approval": { "label": "承認待ち", "tone": "wait" },
+    "failed": { "label": "失敗", "tone": "err" }
+  }
+}

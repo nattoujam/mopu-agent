@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# PreToolUse hook。把握と報告の state では、出口ファイル以外の書き込みとコミットを拒む
+set -uo pipefail
+
+case ${MOPU_PHASE:-} in
+  triage-* | report) ;;
+  *) exit 0 ;;
+esac
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/outcome.sh"
+
+deny() {
+  jq -n --arg reason "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+}
+
+input=$(cat)
+case $(jq -r '.tool_name // ""' <<<"$input") in
+  Edit | Write | NotebookEdit)
+    path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input")
+    [[ ${path##*/} == "$OUTCOME_FILE_NAME" ]] \
+      || deny "このフェーズで書けるのは出口ファイル $OUTCOME_FILE_NAME だけ"
+    ;;
+  Bash)
+    [[ $(jq -r '.tool_input.command // ""' <<<"$input") =~ (^|[^[:alnum:]_-])git[[:space:]]+commit($|[[:space:]]) ]] \
+      && deny "このフェーズではコミットしない"
+    ;;
+esac
+exit 0

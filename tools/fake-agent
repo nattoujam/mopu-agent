@@ -1,25 +1,33 @@
 #!/usr/bin/env bash
-# claude CLI の代役。poll.sh の分岐を決め打ちで踏むための検証用スタブなので、
-# プロンプトの中身は読まず FAKE_AGENT_MODE だけで挙動を決める。
-# 出力は run-task.sh / budget.sh が読む形（stream-json の result イベントと
-# /usage の集計テキスト）に合わせてある。
+# claude CLI の代役。run-task.sh の state machine の分岐を決め打ちで踏むための検証用スタブなので、
+# プロンプトの中身は読まず、MOPU_PHASE（今の state）と下の環境変数だけで出口を決める。
+# 出力は run-task.sh / budget.sh が読む形（stream-json の result イベントと /usage の集計テキスト）に合わせてある。
+#
+# state ごとの出口（既定値は先頭）:
+#   FAKE_AGENT_TRIAGE     implement | decompose | ask | answer | badplan | none（出口ファイルを書かない）
+#   FAKE_AGENT_IMPLEMENT  done | ask | nocommit（コミットせずに done）| dirty（未コミットの変更を残す）
+#                         | ci-fail（src/FAIL をコミットする。検証用リポジトリの CI はこのファイルがあると落ちる）
+#   FAKE_AGENT_FIX        done（src/FAIL があれば消す）| ask | give_up
+#   FAKE_AGENT_REPORT     done | none
+#   FAKE_AGENT_CRITIC     approve | revise | error（critic の --json-schema 呼び出し）
+# 呼び出しそのものの失敗:
+#   FAKE_AGENT_MODE       ok | error | crash | budget | nosession（--resume 付きのときだけ会話が無いと言って落ちる）
+#   FAKE_AGENT_FAIL_PHASE FAKE_AGENT_MODE を効かせる state（空ならすべて）
 set -uo pipefail
 
-MODE="${FAKE_AGENT_MODE:-commit}"
+MODE="${FAKE_AGENT_MODE:-ok}"
+FAIL_PHASE="${FAKE_AGENT_FAIL_PHASE:-}"
 COST="${FAKE_AGENT_COST:-0.01}"
 SUB_ISSUES="${FAKE_AGENT_SUB_ISSUES:-2}"
 USAGE_5H="${FAKE_AGENT_USAGE_5H:-0}"
 USAGE_7D="${FAKE_AGENT_USAGE_7D:-0}"
 RATE_LIMIT="${FAKE_AGENT_RATE_LIMIT:-}"
 SLEEP="${FAKE_AGENT_SLEEP:-0}"
-SESSION_ID="${FAKE_AGENT_SESSION_ID:-00000000-0000-4000-8000-fa4ea9e00000}"
 STRUCTURED="${FAKE_AGENT_STRUCTURED:-}"
+PHASE="${MOPU_PHASE:-}"
 
-# エージェントは worktree 直下で起動される
+OUTCOME_FILE='.mopu-agent-outcome.json'
 MARKER_FILE='mopu-agent-fake.md'
-PLAN_FILE='.mopu-agent-plan.json'
-QUESTION_FILE='.mopu-agent-question.md'
-GATE="${FAKE_AGENT_GATE:-passed}"
 
 PROMPT=""
 RESUME_ID=""
@@ -32,6 +40,7 @@ while (( $# )); do
   esac
   shift
 done
+SESSION_ID="${FAKE_AGENT_SESSION_ID:-fake-$(date +%s%N)}"
 
 emit() { jq -nc "$@"; }
 
@@ -49,99 +58,99 @@ if [[ $PROMPT == "/usage" ]]; then
   exit 0
 fi
 
-# 差し戻しの分類や critic の判定のような構造化出力の呼び出し。作業ツリーには触れない
+# critic と学習の構造化出力。作業ツリーには触れない
 if [[ -n $SCHEMA ]]; then
+  if [[ -z $STRUCTURED && $SCHEMA == *'"revise"'* ]]; then
+    case ${FAKE_AGENT_CRITIC:-approve} in
+      error) echo "fake-agent: FAKE_AGENT_CRITIC=error" >&2; exit 1 ;;
+      revise) STRUCTURED='{"verdict":"revise","reasons":["fake-agent が FAKE_AGENT_CRITIC=revise で差し戻しました"]}' ;;
+      *) STRUCTURED='{"verdict":"approve","reasons":[]}' ;;
+    esac
+  fi
   [[ -n $STRUCTURED ]] || { echo "fake-agent: --json-schema には FAKE_AGENT_STRUCTURED が必要です" >&2; exit 1; }
   emit --argjson o "$STRUCTURED" --argjson c "$COST" \
     '{type:"result", subtype:"success", is_error:false, result:($o | tojson), structured_output:$o, total_cost_usd:$c, num_turns:1}'
   exit 0
 fi
 
-emit --arg m "$MODE" '{type:"system", subtype:"init", model:"fake-agent", mode:$m}'
-
+emit --arg p "$PHASE" '{type:"system", subtype:"init", model:"fake-agent", phase:$p}'
 (( SLEEP > 0 )) && sleep "$SLEEP"
-
-# 引き継ぎが実際に渡っているかをログで追えるようにする
 [[ -n $RESUME_ID ]] && echo "fake-agent: 会話 $RESUME_ID を再開しました" >&2
+[[ -n $RATE_LIMIT ]] && emit --arg s "$RATE_LIMIT" '{type:"rate_limit_event", rate_limit_info:{status:$s}}'
 
-[[ -n $RATE_LIMIT ]] && \
-  emit --arg s "$RATE_LIMIT" '{type:"rate_limit_event", rate_limit_info:{status:$s}}'
+if [[ -z $FAIL_PHASE || $FAIL_PHASE == "$PHASE" ]]; then
+  case $MODE in
+    ok) ;;
+    error) emit_result "タスクを完了できませんでした。" true; exit 0 ;;
+    crash) echo "fake-agent: FAKE_AGENT_MODE=crash により異常終了します" >&2; exit 1 ;;
+    budget)
+      emit --arg r "予算の上限に達したため中断しました。" --argjson c "$COST" --arg s "$SESSION_ID" \
+        '{type:"result", subtype:"error_max_budget_usd", is_error:true, result:$r,
+          total_cost_usd:$c, num_turns:1, session_id:$s, terminal_reason:"budget_exhausted"}'
+      exit 1 ;;
+    nosession)
+      if [[ -n $RESUME_ID ]]; then
+        echo "No conversation found with session ID: $RESUME_ID" >&2
+        exit 1
+      fi ;;
+    *) echo "fake-agent: 不明な FAKE_AGENT_MODE: $MODE" >&2; exit 2 ;;
+  esac
+fi
 
-write_marker() {
-  printf '%s %s\n' "$(date -Is)" "$MODE" >> "$MARKER_FILE"
+# 使い方: outcome <decision> [jq の式 [jq の引数 ...]]
+# 返信が要るコメントには、すべて返信を書く
+outcome() {
+  local decision="$1" expr="${2:-.}"
+  shift 2 2>/dev/null || shift
+  jq -n --arg d "$decision" --arg ids "${MOPU_COMMENT_IDS:-}" "$@" \
+    "{decision: \$d}
+     + (if \$ids == \"\" then {} else {replies: (\$ids | split(\" \") | map({key: ., value: \"fake-agent の返信（\(\$d)）\"}) | from_entries)} end)
+     | $expr" > "$OUTCOME_FILE"
 }
 
-git_commit() {
-  git add -A \
-    && git commit --quiet -m "fake-agent: 検証用のダミー変更 ($MODE)"
+commit_marker() {
+  printf '%s %s\n' "$(date -Is)" "$PHASE" >> "$MARKER_FILE"
+  git add "$MARKER_FILE" && git commit --quiet -m "fake-agent: 検証用のダミー変更 ($PHASE)"
 }
 
-write_plan() {
-  jq -n --argjson n "$SUB_ISSUES" \
-    '{reason:"fake-agent が FAKE_AGENT_MODE=plan で生成しました。",
-      sub_issues:[range($n) | {title:"ダミー sub issue \(.+1)", outline:"検証用のダミー", body:"fake-agent が作成しました。"}]}' \
-    > "$PLAN_FILE"
-}
-
-# Stop hook の ci-gate は本物の Claude Code からしか呼ばれないので、その判定を代わりに書く
-write_gate() {
-  [[ -n ${MOPU_LOG_DIR:-} ]] || return 0
-  jq -nc --arg v "$GATE" '{verdict: $v, detail: "fake-agent", critic_verdict: "approve", critic_reasons: []}' \
-    > "$MOPU_LOG_DIR/ci-gate.json"
-}
-
-case "$MODE" in
-  commit)
-    if ! { write_marker && git_commit; }; then
-      emit_result "コミットに失敗しました（worktree がありません）" true
-      exit 1
-    fi
-    write_gate
-    emit_result "$MARKER_FILE を更新してコミットしました。"
-    ;;
-  question)
-    printf '## 確かめたいこと\n\nfake-agent が FAKE_AGENT_MODE=question で書いた質問です。\n' > "$QUESTION_FILE"
-    emit_result "ユーザーに質問しました。"
-    ;;
-  noop)
-    emit_result "調査した結果、変更は不要でした。"
-    ;;
-  dirty)
-    write_marker
-    emit_result "$MARKER_FILE を編集しました（コミットはしていません）。"
-    ;;
-  plan)
-    write_plan
-    emit_result "タスクが大きいため分解しました。"
-    ;;
-  badplan)
-    printf '{"sub_issues": []}\n' > "$PLAN_FILE"
-    emit_result "タスクが大きいため分解しました。"
-    ;;
-  error)
-    emit_result "タスクを完了できませんでした。" true
-    ;;
-  # 保持期間を過ぎた会話を再開しようとした状況。--resume 付きのときだけ落ちるので、
-  # run-task.sh が会話なしで実行し直すところまで踏める
-  nosession)
-    if [[ -n $RESUME_ID ]]; then
-      echo "No conversation found with session ID: $RESUME_ID" >&2
-      exit 1
-    fi
-    emit_result "会話を再開できなかったので、最初からやり直しました。"
-    ;;
-  budget)
-    emit --arg r "予算の上限に達したため中断しました。" --argjson c "$COST" --arg s "$SESSION_ID" \
-      '{type:"result", subtype:"error_max_budget_usd", is_error:true, result:$r,
-        total_cost_usd:$c, num_turns:1, session_id:$s, terminal_reason:"budget_exhausted"}'
-    exit 1
-    ;;
-  crash)
-    echo "fake-agent: FAKE_AGENT_MODE=crash により異常終了します" >&2
-    exit 1
-    ;;
-  *)
-    echo "fake-agent: 不明な FAKE_AGENT_MODE: $MODE" >&2
-    exit 2
-    ;;
+case $PHASE in
+  triage-*)
+    case ${FAKE_AGENT_TRIAGE:-implement} in
+      implement) outcome implement '.note = "mopu-agent-fake.md に 1 行足す" | .no_split_reason = "単一の関心事で完結"' ;;
+      decompose)
+        outcome decompose '.plan = {reason: "fake-agent が FAKE_AGENT_TRIAGE=decompose で生成しました。",
+          sub_issues: [range($n) | {title: "ダミー sub issue \(. + 1)", outline: "検証用のダミー", body: "fake-agent が作成しました。"}]}' \
+          --argjson n "$SUB_ISSUES" ;;
+      badplan) outcome decompose '.plan = {sub_issues: []}' ;;
+      ask) outcome ask '.question = "## 確かめたいこと\n\nfake-agent が FAKE_AGENT_TRIAGE=ask で書いた質問です。"' ;;
+      answer) outcome answer '.answer = "調査した結果、変更は不要でした（fake-agent）。"' ;;
+      none) ;;
+    esac ;;
+  implement)
+    case ${FAKE_AGENT_IMPLEMENT:-done} in
+      "done") commit_marker && outcome "done" ;;
+      ask) commit_marker && outcome ask '.question = "実装の途中で確かめたいこと（fake-agent）"' ;;
+      nocommit) outcome "done" ;;
+      dirty) printf 'dirty\n' >> "$MARKER_FILE"; outcome "done" ;;
+      ci-fail)
+        mkdir -p src && date -Is > src/FAIL
+        git add src/FAIL && git commit --quiet -m "fake-agent: CI を落とす" && outcome "done" ;;
+    esac ;;
+  fix)
+    case ${FAKE_AGENT_FIX:-done} in
+      "done")
+        if [[ -e src/FAIL ]]; then
+          git rm --quiet src/FAIL && git commit --quiet -m "fake-agent: src/FAIL を消す" && outcome "done"
+        else
+          commit_marker && outcome "done"
+        fi ;;
+      ask) outcome ask '.question = "直し方を確かめたいこと（fake-agent）"' ;;
+      give_up) outcome give_up '.reason = "fake-agent が FAKE_AGENT_FIX=give_up で諦めました"' ;;
+    esac ;;
+  report)
+    case ${FAKE_AGENT_REPORT:-done} in
+      "done") outcome "done" '.pr_body = "## 変更\n\n- mopu-agent-fake.md に 1 行追加（fake-agent）"' ;;
+      none) ;;
+    esac ;;
 esac
+emit_result "fake-agent: $PHASE を終えました。"

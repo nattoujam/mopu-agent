@@ -37,11 +37,9 @@ warn() { printf '%s \033[33m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 err()  { printf '%s \033[31m%s\033[0m\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
-# shellcheck disable=SC2034  # run-task.sh / ci-gate / track-phase で参照
+# shellcheck disable=SC2034  # run-task.sh で参照
 PHASE_FILE_NAME='phases.jsonl'
 TASK_FILE_NAME='task.json'
-# shellcheck disable=SC2034  # run-task.sh / workspace.sh / track-phase で参照
-NOTE_FILE_NAME='.mopu-agent-note.md'
 
 notify() {
   [[ -f $NOTIFY_FILE ]] || return 0
@@ -94,10 +92,10 @@ notify_phase() {
   issue_link="[Issue #$number](https://github.com/$repo/issues/$number)"
   case $phase in
     prepare) silent=--silent; text="▶ $ref $title"$'\n'"\`$task_id\`" ;;
-    implement)
-      silent=--silent
-      if [[ -n $detail ]]; then text="$ref ↩ 実装に戻りました: $detail"; else text="$ref → 実装"; fi ;;
-    verify) silent=--silent; text="$ref → 検証（$detail）" ;;
+    implement) silent=--silent; text="$ref → 実装" ;;
+    verify)
+      [[ $detail == push ]] && return 0
+      silent=--silent; text="$ref → 検証（$detail）" ;;
     publish) silent=--silent; text="$ref → 公開${detail:+（$detail）}" ;;
     review)
       local link="$issue_link"

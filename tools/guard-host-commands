@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse フック。push-branch / run-container は excludedCommands なので、
+# PreToolUse フック。run-container は excludedCommands なので、
 # `&&` で繋いだ後半や $(...) まで sandbox の外で走る。単独の素直な呼び出し以外を弾く
 set -euo pipefail
 
@@ -40,10 +40,6 @@ plain_words() {
 }
 
 case $command in
-  *push-branch*)
-    [[ $command == "$tools/push-branch" ]] \
-      || deny "push-branch は引数なし・単独で実行すること: $tools/push-branch"
-    ;;
   *run-container*)
     [[ $command =~ ^"$tools/run-container "[A-Za-z0-9._:-]+( |$) ]] && plain_words "${command#"$tools/run-container "}" \
       || deny "run-container は単独で呼ぶこと。パイプ・リダイレクト・変数やコマンドの展開・ワイルドカードは使えない（引数に含めるならクォートで囲む）: $tools/run-container <キー> [引数 ...]"

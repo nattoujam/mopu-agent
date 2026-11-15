@@ -21,12 +21,12 @@ SANDBOX_PLACEHOLDERS=(
   /.claude/settings.json /.claude/settings.local.json /.claude/skills /.claude/workflows
 )
 
-# 計画・方針・返信・質問のファイルとキャッシュは worktree の中に置くが、git status を
+# 出口ファイルとキャッシュは worktree の中に置くが、git status を
 # 「エージェントが変更を残したか」の判定に使うため、git からは見えなくする
 ensure_excludes() {
   local f="$REPO_DIR/.git/info/exclude" p
   mkdir -p "${f%/*}"
-  for p in "/$PLAN_FILE_NAME" "/$NOTE_FILE_NAME" "/$REPLIES_FILE_NAME" "/$QUESTION_FILE_NAME" "/$NO_SPLIT_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
+  for p in "/$OUTCOME_FILE_NAME" /.npm-cache/ /.cache/ "${SANDBOX_PLACEHOLDERS[@]}"; do
     grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
   done
 }
@@ -41,7 +41,7 @@ run_setup() {
 # 書けないので、repo/ を rename して別の .git を持つディレクトリに差し替えられないため
 workspace_repo() { printf '%s/%s' "$1" "$REPO_SUBDIR"; }
 
-# 失敗したタスクの worktree は調査用に残すので、同じ Issue を再実行すると
+# 異常終了したタスクの worktree が残っていると、同じ Issue を再実行したときに
 # ブランチが使用中で worktree を作れない。残骸からブランチだけ取り上げる。
 # 未コミットの変更がある場合は消さずに HEAD を切り離すだけにする
 release_branch() {
@@ -69,30 +69,13 @@ workspace_identity() {
   git -C "$1" config user.email "${GIT_AUTHOR_EMAIL:-mopu-agent@localhost}"
 }
 
-# --retry 用。残っている worktree を作り直さずにそのまま使う。未コミットの
-# 変更も untracked ファイルも失わずに続きから作業させるのが目的。
-# release_branch で切り離されているので、ブランチを付け直す
-resume_workspace() {
-  local branch="$1" task_dir="$2" wt
-  wt=$(workspace_repo "$task_dir")
-  [[ -e $wt/.git ]] || { err "引き継げる worktree がありません: $wt"; return 1; }
-  verify_workspace "$wt" || { err "worktree の .git が書き換えられています: $wt"; return 1; }
-  git -C "$wt" checkout --quiet -B "$branch" || return 1
-  workspace_identity "$wt"
-}
-
+# 使い方: create_workspace <ブランチ> <タスクディレクトリ> <起点のコミット>
 create_workspace() {
-  local branch="$1" task_dir="$2" base="origin/$BASE_BRANCH" wt
+  local branch="$1" task_dir="$2" start="$3" wt
   wt=$(workspace_repo "$task_dir")
   release_branch "$branch" || return 1
-  # 同じ Issue への 2 回目以降の作業では、既存 PR のコミットを捨てないよう
-  # リモートブランチがあればそちらをベースにする
-  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    base="origin/$branch"
-    log "既存ブランチ $branch を引き継ぎます"
-  fi
   mkdir -p "$task_dir" || return 1
-  git -C "$REPO_DIR" worktree add --quiet -B "$branch" "$wt" "$base" || return 1
+  git -C "$REPO_DIR" worktree add --quiet -B "$branch" "$wt" "$start" || return 1
   workspace_identity "$wt"
 }
 
