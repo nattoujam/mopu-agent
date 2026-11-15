@@ -352,7 +352,7 @@ proc main(): Future[int] {.async.} =
   scheduler = newScheduler()
   let host = (let h = getEnv("CONSOLE_HOST"); if h.len > 0: h else: "127.0.0.1")
   let port = (let p = getEnv("CONSOLE_PORT"); if p.len > 0: parseInt(p) else: 8787)
-  for h in ["127.0.0.1", "localhost", "[::1]"]:
+  for h in ["127.0.0.1", "localhost", "[::1]", if ':' in host: "[" & host & "]" else: host]:
     allowedHosts.add h & ":" & $port
   createDir(runLogDir)
 
