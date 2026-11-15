@@ -20,6 +20,7 @@ let
   secretsDir* = stateDir / "secrets"
   appKeyFile* = secretsDir / "github-app.pem"
   notifyFile* = secretsDir / "nextcloud.json"
+  notifyStateFile* = stateDir / "notify-state.json"
 
 const repoSubdir* = "repo"
 

@@ -180,7 +180,7 @@ proc waitPoll(pid: Pid): Future[int] {.async.} =
   else: -1
 
 proc execute(s: Scheduler, trigger: string, retry: Option[Retry]) {.async.} =
-  var argv = @[agentDir / "poll.sh"]
+  var argv = @[mopuBin, "poll"]
   let retryNumber = if retry.isSome: %retry.get.number else: newJNull()
   let retryRepo = if retry.isSome: %retry.get.repo else: newJNull()
   if retry.isSome:
@@ -196,7 +196,7 @@ proc execute(s: Scheduler, trigger: string, retry: Option[Retry]) {.async.} =
     exitCode = await waitPoll(spawnPoll(argv, path))
   except OSError as e:
     let f = open(path, fmAppend)
-    f.writeLine "poll.sh を起動できませんでした: " & e.msg
+    f.writeLine "mopu poll を起動できませんでした: " & e.msg
     f.close()
     exitCode = -1
   let finished = epochTime()

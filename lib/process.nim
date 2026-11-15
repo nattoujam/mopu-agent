@@ -1,7 +1,7 @@
-import std/[os, osproc, posix, streams, strtabs]
+import std/[os, osproc, posix, streams, strtabs, strutils]
 
 proc capture*(cmd: string, args: openArray[string], input = "",
-              env: openArray[(string, string)] = []): tuple[output: string, exitCode: int] =
+              env: openArray[(string, string)] = [], mergeStderr = false): tuple[output: string, exitCode: int] =
   var table: StringTableRef = nil
   if env.len > 0:
     table = newStringTable(modeCaseSensitive)
@@ -9,18 +9,37 @@ proc capture*(cmd: string, args: openArray[string], input = "",
       table[k] = v
     for (k, v) in env:
       table[k] = v
-  let p = startProcess(cmd, args = args, env = table, options = {poUsePath})
+  let options = if mergeStderr: {poUsePath, poStdErrToStdOut} else: {poUsePath}
+  let p = startProcess(cmd, args = args, env = table, options = options)
   defer: p.close()
   if input.len > 0:
     p.inputStream.write input
   p.inputStream.close()
   result.output = p.outputStream.readAll()
-  discard p.errorStream.readAll()
+  if not mergeStderr:
+    discard p.errorStream.readAll()
   result.exitCode = p.waitForExit()
 
 var POSIX_SPAWN_SETSID {.importc, header: "<spawn.h>".}: cint
 proc posix_spawn_file_actions_addchdir_np(fa: var Tposix_spawn_file_actions, path: cstring): cint {.
   importc, header: "<spawn.h>".}
+
+proc gitRun*(dir: string, args: varargs[string]): tuple[output: string, exitCode: int] =
+  capture("git", @["-C", dir] & @args)
+
+proc gitOk*(dir: string, args: varargs[string]): bool =
+  gitRun(dir, args).exitCode == 0
+
+proc gitOut*(dir: string, args: varargs[string]): string =
+  let r = gitRun(dir, args)
+  if r.exitCode == 0: r.output.strip(leading = false) else: ""
+
+proc ghRun*(args: openArray[string], input = ""): tuple[output: string, exitCode: int] =
+  capture("gh", args, input)
+
+proc ghOut*(args: openArray[string]): string =
+  let r = ghRun(args)
+  if r.exitCode == 0: r.output.strip(leading = false) else: ""
 
 type
   Output* = object
@@ -97,3 +116,6 @@ proc waitExit*(pid: Pid): int =
 
 proc run*(argv: seq[string], opts = SpawnOptions()): int =
   waitExit(spawn(argv, opts))
+
+proc ghShowingErrors*(args: openArray[string]): bool =
+  run(@["gh"] & @args, SpawnOptions(stdout: Output(path: "/dev/null"))) == 0

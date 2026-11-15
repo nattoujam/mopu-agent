@@ -361,9 +361,6 @@ proc main(): Future[int] {.async.} =
     log host & " での待受は拒否します。認証がないため loopback 以外に晒すのは危険です"
     log "それでも公開する場合は CONSOLE_ALLOW_REMOTE=1 を設定し、前段で認証をかけてください"
     return 1
-  if not fileExists(agentDir / "poll.sh"):
-    log "poll.sh が見つかりません: " & agentDir
-    return 1
   for h in ["127.0.0.1", "localhost", "[::1]"]:
     allowedHosts.add h & ":" & $port
   createDir(runLogDir)
@@ -392,7 +389,7 @@ proc main(): Future[int] {.async.} =
   if not scheduler.current.isNil:
     log "実行中のポーリングが終わるのを待っています (最大 5 分)"
     if not await scheduler.waitForCurrent(300):
-      log "待機を打ち切りました。poll.sh はバックグラウンドで継続します"
+      log "待機を打ち切りました。mopu poll はバックグラウンドで継続します"
   0
 
 proc consoleMain*(): int =

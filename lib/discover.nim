@@ -78,8 +78,9 @@ type
     created_at*: string
     reply_kind*: ReplyKind
 
-  Config = object
-    repo, trigger, labelQueued, allowedActors, branchPrefix, commentMarker, lastPollFile, seenFile: string
+  DiscoverConfig* = object
+    repo*, trigger*, labelQueued*, allowedActors*, branchPrefix*, commentMarker*, lastPollFile*, seenFile*: string
+    spendFile*, learnedFile*: string
 
   SubIssue* = object
     number*: int
@@ -280,13 +281,13 @@ proc nextLearnBatch*(prs: seq[MergedPr], runs: seq[SpendRun], learned, repo, pre
     .sorted(proc (a, b: MergedPr): int = cmp(parseIso(a.mergedAt), parseIso(b.mergedAt)))
   if pending.len >= LearnBatchSize: pending[0 ..< LearnBatchSize] else: @[]
 
-proc loadConfig(): Config =
+proc loadDiscoverConfig(): DiscoverConfig =
   proc need(name: string): string =
     result = getEnv(name)
     if result.len == 0:
       stderr.writeLine name & " が渡されていません（load_config で export してください）"
       quit 1
-  Config(
+  DiscoverConfig(
     repo: need("REPO"),
     trigger: need("TRIGGER_COMMAND"),
     labelQueued: need("LABEL_QUEUED"),
@@ -295,6 +296,8 @@ proc loadConfig(): Config =
     commentMarker: need("COMMENT_MARKER"),
     lastPollFile: need("LAST_POLL_FILE"),
     seenFile: need("SEEN_FILE"),
+    spendFile: getEnv("SPEND_FILE"),
+    learnedFile: getEnv("LEARNED_FILE"),
   )
 
 proc gh(args: openArray[string]): string =
@@ -312,9 +315,6 @@ proc ghJson[T](args: openArray[string]): Option[T] =
 
 proc log(msg: string) =
   stderr.writeLine now().format("HH:mm:ss") & " " & msg
-
-proc emit(task: JsonNode) =
-  stdout.writeLine $task
 
 proc readText(path: string): string =
   if fileExists(path): readFile(path) else: ""
@@ -346,7 +346,7 @@ type
   LabeledResponse = object
     data: Option[LabeledData]
 
-proc discoverLabeled(cfg: Config) =
+proc labeledTasks*(cfg: DiscoverConfig): seq[JsonNode] =
   let (owner, name) = (cfg.repo.split('/')[0], cfg.repo.split('/')[^1])
   let res = ghJson[LabeledResponse](["api", "graphql", "-f", "owner=" & owner, "-f", "name=" & name,
                                      "-f", "label=" & cfg.labelQueued, "-f", "query=" & LabeledQuery])
@@ -355,7 +355,7 @@ proc discoverLabeled(cfg: Config) =
       res.get.data.get.repository.get.issues.isSome:
     nodes = res.get.data.get.repository.get.issues.get.nodes.get(@[])
   for n in nodes.sortedByIt(it.number):
-    emit %*{
+    result.add %*{
       "kind": "issue",
       "number": n.number,
       "title": n.title,
@@ -364,11 +364,11 @@ proc discoverLabeled(cfg: Config) =
       "deps": subIssueDeps(n.number, n.parent),
     }
 
-proc resolveTarget(number: int, cfg: Config): CommentTarget =
+proc resolveTarget(number: int, cfg: DiscoverConfig): CommentTarget =
   let pr = ghJson[PrHead](["pr", "view", $number, "-R", cfg.repo, "--json", "headRefName,state,isCrossRepository"])
   commentTarget(number, pr, cfg.branchPrefix)
 
-proc fetchComments(cfg: Config, since: string): seq[RawComment] =
+proc fetchComments(cfg: DiscoverConfig, since: string): seq[RawComment] =
   let q = "sort=updated&direction=desc&per_page=100&since=" & since
   var rows: seq[RawComment]
   for c in ghJson[seq[RestComment]](["api", "repos/" & cfg.repo & "/issues/comments?" & q]).get(@[]):
@@ -379,7 +379,7 @@ proc fetchComments(cfg: Config, since: string): seq[RawComment] =
                         issue_url: c.pull_request_url.get(""), created_at: c.created_at, reply_kind: rkReview)
   sortComments(rows)
 
-proc fetchThread(cfg: Config, numbers: seq[int]): seq[HistoryRow] =
+proc fetchThread(cfg: DiscoverConfig, numbers: seq[int]): seq[HistoryRow] =
   proc row(id: int, actor, body, url, at: string): HistoryRow =
     HistoryRow(id: $id, actor: actor, by_agent: cfg.commentMarker in body, body: chomp(body), url: url,
                created_at: at)
@@ -394,7 +394,7 @@ proc fetchThread(cfg: Config, numbers: seq[int]): seq[HistoryRow] =
 type PrNumber = object
   number: int
 
-proc threadNumbers(cfg: Config, number: int, comments: seq[CommentRef], branch: string): seq[int] =
+proc threadNumbers(cfg: DiscoverConfig, number: int, comments: seq[CommentRef], branch: string): seq[int] =
   result = @[number]
   for c in comments:
     if c.reply_number notin result:
@@ -407,7 +407,7 @@ type IssueMeta = object
   title: string
   body: string
 
-proc discoverComments(cfg: Config) =
+proc commentTasks*(cfg: DiscoverConfig): seq[JsonNode] =
   let lastPoll = if fileExists(cfg.lastPollFile): some(readFile(cfg.lastPollFile).strip) else: none(string)
   let since = computeSince(lastPoll, getTime())
   var seen = readText(cfg.seenFile).split('\n').filterIt(it.len > 0).toHashSet
@@ -466,17 +466,17 @@ proc discoverComments(cfg: Config) =
     }
     if branch.len > 0:
       task["branch"] = %branch
-    emit task
+    result.add task
 
 type HeadRef = object
   headRefName: string
 
-proc listOpenAgentBranches(cfg: Config) =
+proc openAgentBranches*(cfg: DiscoverConfig): seq[string] =
   let prs = ghJson[seq[HeadRef]](["pr", "list", "-R", cfg.repo, "--state", "open", "--limit", "100",
                                   "--json", "headRefName"]).get(@[])
   for pr in prs:
     if pr.headRefName.startsWith(cfg.branchPrefix):
-      stdout.writeLine pr.headRefName
+      result.add pr.headRefName
 
 proc readSpendRuns(path: string): seq[SpendRun] =
   for line in readText(path).split('\n'):
@@ -487,7 +487,7 @@ proc readSpendRuns(path: string): seq[SpendRun] =
     except CatchableError:
       discard
 
-proc fetchLearnComments(cfg: Config, pr: MergedPr, issue: int): seq[LearnComment] =
+proc fetchLearnComments(cfg: DiscoverConfig, pr: MergedPr, issue: int): seq[LearnComment] =
   var rows: seq[LearnComment]
   proc add(id: int, actor, body, url, at: string, path = "") =
     if unicode.strip(body).len == 0 or cfg.commentMarker in body:
@@ -511,17 +511,12 @@ proc toJson(c: LearnComment): JsonNode =
   if c.path.len > 0:
     result["path"] = %c.path
 
-proc discoverLearnSource(cfg: Config) =
-  let spendFile = getEnv("SPEND_FILE")
-  let learnedFile = getEnv("LEARNED_FILE")
-  if spendFile.len == 0 or learnedFile.len == 0:
-    stderr.writeLine "SPEND_FILE と LEARNED_FILE が渡されていません（load_config で export してください）"
-    quit 1
+proc learnTask*(cfg: DiscoverConfig): JsonNode =
   let prs = ghJson[seq[MergedPr]](["pr", "list", "-R", cfg.repo, "--state", "merged", "--limit", "500", "--json",
                                    "number,title,body,url,headRefName,createdAt,mergedAt,mergeCommit"]).get(@[])
-  let batch = nextLearnBatch(prs, readSpendRuns(spendFile), readText(learnedFile), cfg.repo, cfg.branchPrefix)
+  let batch = nextLearnBatch(prs, readSpendRuns(cfg.spendFile), readText(cfg.learnedFile), cfg.repo, cfg.branchPrefix)
   if batch.len == 0:
-    return
+    return nil
   var learnPrs: seq[LearnPr]
   for pr in batch:
     let issue = branchToIssueNumber(pr.headRefName, cfg.branchPrefix).get
@@ -547,7 +542,7 @@ proc discoverLearnSource(cfg: Config) =
     }
     j["comments"] = %p.comments.map(toJson)
     prsJson.add j
-  emit %*{
+  %*{
     "kind": "learn",
     "number": learnPrs[^1].number,
     "title": "差し戻しの振り返り（" & learnPrs.mapIt("#" & $it.number).join(", ") & "）",
@@ -556,13 +551,13 @@ proc discoverLearnSource(cfg: Config) =
     "prs": prsJson,
   }
 
-proc markSeen(id: string, cfg: Config) =
+proc markSeen*(id: string, cfg: DiscoverConfig) =
   if id.len == 0:
     return
   if id notin readText(cfg.seenFile).split('\n'):
     appendLine(cfg.seenFile, id)
 
-proc initSeenBaseline(cfg: Config) =
+proc initSeenBaseline*(cfg: DiscoverConfig) =
   if fileExists(cfg.lastPollFile):
     return
   writeFile(cfg.lastPollFile, utcStamp(getTime()) & "\n")
@@ -570,14 +565,19 @@ proc initSeenBaseline(cfg: Config) =
 
 proc discoverMain*(args: seq[string]) =
   let sub = if args.len > 0: args[0] else: ""
-  let cfg = loadConfig()
+  let cfg = loadDiscoverConfig()
   case sub
-  of "labeled": discoverLabeled(cfg)
-  of "comments": discoverComments(cfg)
-  of "open-branches": listOpenAgentBranches(cfg)
+  of "labeled":
+    for t in labeledTasks(cfg): stdout.writeLine $t
+  of "comments":
+    for t in commentTasks(cfg): stdout.writeLine $t
+  of "open-branches":
+    for b in openAgentBranches(cfg): stdout.writeLine b
   of "mark-seen": markSeen(if args.len > 1: args[1] else: "", cfg)
   of "init-baseline": initSeenBaseline(cfg)
-  of "learn-source": discoverLearnSource(cfg)
+  of "learn-source":
+    let t = learnTask(cfg)
+    if t != nil: stdout.writeLine $t
   else:
     stderr.writeLine "使い方: discover labeled|comments|open-branches|mark-seen <id>|init-baseline|learn-source"
     quit 1

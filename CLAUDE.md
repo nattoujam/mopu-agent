@@ -2,11 +2,13 @@
 
 ## 動作を確かめる
 
-LLM を呼ばずに `poll.sh` の分岐を確かめるときは、`CLAUDE_BIN` を `tools/fake-agent` に向ける。
+`bin/mopu` は、起動したときにソースから作り直されない。`lib/` を変えたら、動かす前に `nim build` を実行する。テストは `nim test` で回す。
+
+LLM を呼ばずに `mopu poll` の分岐を確かめるときは、`CLAUDE_BIN` を `tools/fake-agent` に向ける。
 fake-agent は `MOPU_PHASE`（今の state）ごとに出口ファイルを書く。どの出口にするかは `FAKE_AGENT_TRIAGE` などの環境変数で切り替える。変数と既定値は `tools/fake-agent` の先頭にある。
 
 ```bash
-CLAUDE_BIN=./tools/fake-agent FAKE_AGENT_TRIAGE=ask ./poll.sh --repo <owner/repo> --task <番号>
+CLAUDE_BIN=./tools/fake-agent FAKE_AGENT_TRIAGE=ask ./bin/mopu poll --repo <owner/repo> --task <番号>
 ```
 
 fake-agent でも、Issue の作成とラベルの操作は本物の GitHub に対して行う。`--repo` には検証用のリポジトリを指定する。
@@ -17,14 +19,14 @@ fake-agent でも、Issue の作成とラベルの操作は本物の GitHub に�
 
 OS・プロセス・シグナル・ソケット・非同期 I/O に触る stdlib の proc（`std/posix`、`std/osproc`、`std/asyncdispatch`、`std/asynchttpserver`、`std/nativesockets` など）は、使う前に `$(asdf where nim)/lib/` のソースを読み、副作用を確かめてから書く。docstring に書かれていない副作用があり、テストでは気づきにくい。
 
-例: `addSignal` は `signalfd` を使うため、登録したシグナルをプロセス全体で block する。block は exec した子に引き継がれるので、そのまま poll.sh を起動すると poll.sh が SIGTERM を受け取れない。
+例: `addSignal` は `signalfd` を使うため、登録したシグナルをプロセス全体で block する。block は exec した子に引き継がれるので、コンソールがそのまま `mopu poll` を起動すると、`mopu poll` が SIGTERM を受け取れない。
 
 `std/strutils` や `std/sequtils` のように値を変換するだけで OS に触らない module は、ソースを読まなくてよい。
 
 ## Claude Code を更新したとき
 
 sandbox が作業ディレクトリに置く書き込み禁止の placeholder は、Claude Code のバージョンによって変わる。
-更新したら `tools/check-sandbox-placeholders` を実行する。Claude Code へのログインが要り、利用枠を少し使う。
-足りない placeholder が出たら、`lib/workspace.sh` の `SANDBOX_PLACEHOLDERS` に足す。
+更新したら `./bin/mopu check sandbox-placeholders` を実行する。Claude Code へのログインが要り、利用枠を少し使う。
+足りない placeholder が出たら、`lib/workspace.nim` の `SandboxPlaceholders` に足す。
 
-`tools/check-agent-runtime` も実行する。run-task.sh が頼っている Claude Code の挙動（sandbox の中の Bash の自動許可、Stop hook の差し戻し、PreToolUse hook の拒否）を実測する。
+`./bin/mopu check agent-runtime` も実行する。タスクの実行が頼っている Claude Code の挙動（sandbox の中の Bash の自動許可、Stop hook の差し戻し、PreToolUse hook の拒否）を実測する。

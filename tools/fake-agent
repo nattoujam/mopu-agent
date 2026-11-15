@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# claude CLI の代役。run-task.sh の state machine の分岐を決め打ちで踏むための検証用スタブなので、
+# claude CLI の代役。lib/run_task.nim の state machine の分岐を決め打ちで踏むための検証用スタブなので、
 # プロンプトの中身は読まず、MOPU_PHASE（今の state）と下の環境変数だけで出口を決める。
-# 出力は run-task.sh / budget.sh が読む形（stream-json の result イベントと /usage の集計テキスト）に合わせてある。
+# 出力は lib/run_task.nim / lib/budget.nim が読む形（stream-json の result イベントと /usage の集計テキスト）に合わせてある。
 #
 # state ごとの出口（既定値は先頭）:
 #   FAKE_AGENT_TRIAGE     implement | decompose | ask | answer | badplan | none（出口ファイルを書かない）
@@ -49,7 +49,7 @@ emit_result() {
     '{type:"result", subtype:"success", is_error:$e, result:$r, total_cost_usd:$c, num_turns:1, session_id:$s}'
 }
 
-# budget.sh は --output-format json の .result を parse_usage の sed に食わせる。
+# lib/budget.nim の parseUsage は --output-format json の .result を行ごとに読む。
 # 行頭と "· resets" の並びが崩れると使用率を取れずゲートが閉じる
 if [[ $PROMPT == "/usage" ]]; then
   emit --arg r "$(printf 'Current session: %s%% used · resets in 3h 20m\nCurrent week (all models): %s%% used · resets Mon, 9:00am' \

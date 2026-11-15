@@ -18,10 +18,6 @@ proc conditionsFromEnv*(): CallConditions =
     maxSubIssues: (try: parseInt(getEnv("MOPU_MAX_SUB_ISSUES", "5")) except ValueError: 5),
   )
 
-proc gitOut(wt: string, args: varargs[string]): string =
-  let r = capture("git", @["-C", wt] & @args)
-  if r.exitCode == 0: r.output.strip(leading = false) else: ""
-
 proc hasText(node: JsonNode): bool =
   node != nil and node.kind == JString and node.getStr.toRunes.anyIt(not it.isWhiteSpace)
 

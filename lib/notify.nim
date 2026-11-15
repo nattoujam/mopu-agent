@@ -1,4 +1,5 @@
-import std/[httpclient, json, openssl, sequtils, strutils, sysrand, uri]
+import std/[httpclient, json, openssl, os, sequtils, strutils, sysrand, uri]
+import log, paths
 
 type Config = object
   url, room, secret: string
@@ -41,6 +42,29 @@ proc send(config: Config, message: string, silent: bool) =
   let res = client.post(url, body = $(%*{"message": message, "silent": silent}))
   if not res.code.is2xx:
     raise newException(IOError, "HTTP " & $res.code.int & ": " & res.body[0 ..< min(300, res.body.len)])
+
+proc notify*(message: string, silent = false) =
+  if not fileExists(notifyFile):
+    return
+  try:
+    send(readConfig(notifyFile), message, silent)
+  except CatchableError as e:
+    warn "Nextcloud Talk に通知できませんでした: " & e.msg
+
+proc notifyOnChange*(key, value, message: string, silent = false) =
+  var state = (try: parseFile(notifyStateFile) except CatchableError: newJObject())
+  if state.kind != JObject:
+    state = newJObject()
+  let prev = state{key}
+  if (if prev == nil or prev.kind != JString: "" else: prev.getStr) == value:
+    return
+  state[key] = %value
+  try:
+    writeFile(notifyStateFile & ".tmp", $state & "\n")
+    moveFile(notifyStateFile & ".tmp", notifyStateFile)
+  except CatchableError:
+    discard
+  notify(message, silent)
 
 proc notifyMain*(args: seq[string]): int =
   let rest = if args.len > 1: args[1 .. ^1] else: @[]

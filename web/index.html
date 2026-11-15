@@ -647,7 +647,7 @@ function tick() {
   const sc = status.scheduler;
   if (sc.current) {
     $('countdown').textContent = fmtDuration(serverNow() - sc.current.started_at);
-    $('countdownLabel').textContent = 'poll.sh 実行中';
+    $('countdownLabel').textContent = 'mopu poll 実行中';
   } else if (sc.enabled && sc.next_run_at) {
     $('countdown').textContent = fmtDuration(sc.next_run_at - serverNow());
     $('countdownLabel').textContent = '次回ポーリングまで';
@@ -1130,7 +1130,7 @@ function renderSettings(data) {
       <div class="field" data-field="repo.name">
         <label for="f-new-name">リポジトリ</label>
         <input type="text" id="f-new-name" placeholder="owner/repo" autocomplete="off" spellcheck="false">
-        <div class="hint" data-help="追加したら ./setup.sh --repo owner/repo でラベルを作ること">追加したら ./setup.sh --repo owner/repo でラベルを作ること</div>
+        <div class="hint" data-help="追加したら ./bin/mopu setup --repo owner/repo でラベルを作ること">追加したら ./bin/mopu setup --repo owner/repo でラベルを作ること</div>
       </div>
       ${repoFormHtml('new', schema, template)}
       ${actionsHtml('new', '<button class="primary" id="addRepo">追加</button>')}

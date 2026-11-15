@@ -13,8 +13,6 @@ proc failure(reason: string): JsonNode =
 proc readJson(path: string): JsonNode =
   try: parseFile(path) except CatchableError: nil
 
-proc git(wt: string, args: varargs[string]): tuple[output: string, exitCode: int] =
-  capture("git", @["-C", wt] & @args)
 
 proc material(wt, refName, logDir: string): string =
   var m = "## 依頼\n\n"
@@ -57,22 +55,22 @@ proc material(wt, refName, logDir: string): string =
         lines.add "- " & text(t)
       m.add lines.join("\n") & "\n"
   m.add "\n## diff（" & refName & " からの変更）\n\n```diff\n"
-  let diff = git(wt, "diff", "--merge-base", refName, "HEAD", "--", ".", ":(exclude)*.png").output
+  let diff = gitRun(wt, "diff", "--merge-base", refName, "HEAD", "--", ".", ":(exclude)*.png").output
   m.add diff[0 ..< min(diff.len, MaxDiffChars)]
   m.add "\n```\n"
   m
 
 proc imageContent(wt, refName: string): seq[JsonNode] =
   var pairs = 0
-  for png in git(wt, "diff", "--name-only", "--merge-base", refName, "HEAD", "--", "*.png").output.splitLines:
+  for png in gitRun(wt, "diff", "--name-only", "--merge-base", refName, "HEAD", "--", "*.png").output.splitLines:
     if png.len == 0:
       continue
     if pairs >= MaxImagePairs:
       break
-    let after = git(wt, "show", "HEAD:" & png)
+    let after = gitRun(wt, "show", "HEAD:" & png)
     if after.exitCode != 0:
       continue
-    let before = git(wt, "show", refName & ":" & png)
+    let before = gitRun(wt, "show", refName & ":" & png)
     let beforeData = if before.exitCode == 0: before.output else: ""
     if after.output.len > MaxImageBytes or beforeData.len > MaxImageBytes:
       continue

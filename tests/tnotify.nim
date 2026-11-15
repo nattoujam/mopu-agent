@@ -37,7 +37,7 @@ proc acceptLoop() {.async.} =
 
 asyncCheck acceptLoop()
 
-proc notify(args: varargs[string]): tuple[code: int, stderr: string] =
+proc runNotify(args: varargs[string]): tuple[code: int, stderr: string] =
   let config = createTempDir("notify-test-", "") / "nextcloud.json"
   writeFile(config, $(%*{"url": baseUrl & "/", "room": Room, "secret": Secret}))
   let p = startProcess(Root / "bin" / "mopu", args = @["notify", config] & @args)
@@ -58,7 +58,7 @@ suite "notify":
     replies.setLen(0)
 
   test "random と message の HMAC を署名に付けて、会話の bot API に送る":
-    check notify("--silent", "テスト", "の本文").code == 0
+    check runNotify("--silent", "テスト", "の本文").code == 0
     check received.len == 1
     let req = received[0]
     check req.url == "/ocs/v2.php/apps/spreed/api/v1/bot/" & Room & "/message"
@@ -69,6 +69,6 @@ suite "notify":
 
   test "送れなかったら、ステータスを stderr に出して 1 で終わる":
     replies = @[(Http401, "unauthorized")]
-    let (code, stderr) = notify("届かない")
+    let (code, stderr) = runNotify("届かない")
     check code == 1
     check "HTTP 401" in stderr
