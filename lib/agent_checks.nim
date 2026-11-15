@@ -1,5 +1,5 @@
 import std/[algorithm, json, os, sequtils, sets, strutils, tempfiles]
-import log, paths, process, workspace
+import log, paths, process, resources, workspace
 
 proc claudeBin(): string = getEnv("CLAUDE_BIN", "claude")
 
@@ -20,7 +20,7 @@ proc checkAgentRuntime(): int =
   createDir(wt)
   createDir(dir / "log")
   initRepo(wt)
-  var s = parseFile(agentSettingsFile)
+  var s = parseJson(AgentSettingsJson)
   s["permissions"]["allow"].add %("Edit(/" & wt & "/**)")
   s["sandbox"]["filesystem"] = %*{"allowWrite": [wt]}
   s["hooks"] = %*{
@@ -65,7 +65,7 @@ proc checkSandboxPlaceholders(): int =
   discard gitRun(dir, "init", "-q")
   # placeholder は sandbox の中でしか見えないので、git status の結果を作業ディレクトリに書かせて読む
   discard run(probeArgs("Bash ツールで次のコマンドを 1 回だけ実行する。ほかのことはしない: git status --porcelain --untracked-files=all > " &
-                        output, agentSettingsFile),
+                        output, $parseJson(AgentSettingsJson)),
               SpawnOptions(cwd: dir, stdout: Output(path: "/dev/null"), unsetEnv: @["GH_TOKEN", "GITHUB_TOKEN"]))
   if not fileExists(dir / output):
     die "sandbox の中で git status が実行されませんでした"

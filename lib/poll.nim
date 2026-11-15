@@ -1,6 +1,6 @@
 import std/[json, options, os, sequtils, strutils, tempfiles, times]
 import agent, budget, config, discover, github, github_app, learn, log, loop_metrics, notify, paths, phases, plan,
-       process, run_lock, run_task, workspace
+       process, resources, run_lock, run_task, workspace
 
 const Usage = """使い方: mopu poll [オプション]
 
@@ -62,7 +62,7 @@ proc lockPoll(): cint =
 
 proc pollAllRepos(o: Options, errorKey: string): int =
   let cfg = loadGlobalConfig()
-  log "mopu-agent " & cfg.agentCommit
+  log "mopu-agent " & Version & " (" & Commit & ")"
   discard lockPoll()
   let repos = repoNames(loadSettingsFile())
   let n = repos.len
@@ -325,7 +325,7 @@ proc pollRepo(o: Options, r: RepoPoll) =
   if o.maxTasks.len > 0:
     cfg.maxTasksPerRun = (try: parseInt(o.maxTasks) except ValueError: die "--max-tasks には整数を指定してください")
   if o.reportFile.len == 0:
-    log "mopu-agent " & cfg.agentCommit
+    log "mopu-agent " & Version & " (" & Commit & ")"
     # 親から呼ばれたときは、親がロックを握っている
     discard lockPoll()
 

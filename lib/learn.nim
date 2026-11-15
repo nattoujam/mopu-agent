@@ -1,6 +1,6 @@
 import std/[algorithm, json, os, sequtils, strutils, times, unicode]
-import agent, budget, config, discover, github, log, notify, paths, phases, process, project_memory, run_task,
-       workspace
+import agent, budget, config, discover, github, log, notify, paths, phases, process, project_memory, resources,
+       run_task, workspace
 
 const
   KnownMaxChars = 20000
@@ -258,11 +258,11 @@ proc runLearn(l: Learn): bool =
   if not gitOk(cfg.repoDir, "worktree", "add", "--quiet", "--detach", wt, "origin/" & cfg.baseBranch):
     return l.failed("worktree の準備に失敗しました")
 
-  var sysPrompt = trimNewlines(readFile(promptsDir / "learn.md"))
+  var sysPrompt = trimNewlines(prompt("learn.md"))
   let known = buildKnownIssuesContext(cfg)
   if known.len > 0:
     sysPrompt.add "\n\n" & known
-  sysPrompt.add "\n\n" & trimNewlines(readFile(promptsDir / "read-only.md"))
+  sysPrompt.add "\n\n" & trimNewlines(prompt("read-only.md"))
   let memory = projectMemoryPrompt(cfg.repoDir, "origin/" & cfg.baseBranch)
   if memory.len > 0:
     sysPrompt.add "\n\n" & memory
@@ -330,7 +330,7 @@ proc runLearnTask*(p: PollState, task: JsonNode): bool =
                 dir: p.cfg.worktreesDir / id, log: p.cfg.taskLogsDir / id)
   createDir(l.log)
   var saved = task.copy
-  saved["commit"] = %p.cfg.agentCommit
+  saved["commit"] = %Commit
   writeFile(l.log / TaskFileName, $saved & "\n")
   try:
     result = l.runLearn()

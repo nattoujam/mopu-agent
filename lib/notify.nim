@@ -4,7 +4,7 @@ import log, paths
 type Config = object
   url, room, secret: string
 
-proc readConfig(path: string): Config =
+proc readConfig*(path: string): Config =
   let data = parseJson(readFile(path))
   if data.kind != JObject:
     raise newException(ValueError, path & " が JSON オブジェクトではありません")
@@ -27,7 +27,7 @@ proc sign*(secret, random, message: string): string =
     raise newException(ValueError, "HMAC を計算できませんでした")
   toHexLower(digest)
 
-proc send(config: Config, message: string, silent: bool) =
+proc send*(config: Config, message: string, silent: bool) =
   let random = toHexLower(urandom(32))
   let client = newHttpClient(timeout = 10_000)
   defer: client.close()

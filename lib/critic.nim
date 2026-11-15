@@ -1,5 +1,5 @@
 import std/[base64, json, os, strutils, tempfiles]
-import history, paths, process
+import history, paths, process, resources
 
 const
   MaxDiffChars = 60000
@@ -98,11 +98,11 @@ proc runCritic*(taskDir, baseBranch, logDir: string): JsonNode =
   content.add imageContent(wt, refName)
   writeFile(work / "input.jsonl", $(%*{"type": "user", "message": {"role": "user", "content": content}}) & "\n")
   createDir(work / "cwd")
-  let language = (let s = readJson(agentSettingsFile); if s == nil: newJNull() else: s{"language"})
+  let language = parseJson(AgentSettingsJson){"language"}
   let rc = run(@[
     "timeout", limit, claude, "-p",
     "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-    "--append-system-prompt", readFile(promptsDir / "critic.md").strip(leading = false, chars = {'\n'}),
+    "--append-system-prompt", prompt("critic.md").strip(leading = false, chars = {'\n'}),
     "--json-schema", Schema, "--model", model, "--tools", "",
     "--settings", $(%*{"language": language}),
     "--setting-sources", "", "--strict-mcp-config", "--mcp-config", """{"mcpServers":{}}""",

@@ -1,45 +1,22 @@
-import std/[json, options, os, osproc, sequtils, streams, strtabs, strutils, tempfiles, unittest]
+import std/[json, options, os, sequtils, strutils, tempfiles, unittest]
+import ../lib/discover
 
 const Root = currentSourcePath().parentDir.parentDir
 
-type Workspace = object
-  dir, seenFile: string
+putEnv("PATH", Root / "tests" / "bin" & ":" & getEnv("PATH"))
+putEnv("FIXTURES", Root / "tests" / "fixtures")
 
-proc workspace(seenIds: seq[string] = @[], lastPoll = some("2026-09-06T00:00:00Z")): Workspace =
-  result.dir = createTempDir("discover-test-", "")
-  result.seenFile = result.dir / "seen-comments.txt"
+proc workspace(seenIds: seq[string] = @[], lastPoll = some("2026-09-06T00:00:00Z")): DiscoverConfig =
+  let dir = createTempDir("discover-test-", "")
+  result = DiscoverConfig(repo: "o/r", trigger: "/claude", labelQueued: "agent:queued", allowedActors: "nattoujam",
+                          branchPrefix: "agent/issue-", commentMarker: "<!-- mopu-agent -->",
+                          lastPollFile: dir / "last-poll", seenFile: dir / "seen-comments.txt")
   writeFile(result.seenFile, seenIds.mapIt(it & "\n").join)
   if lastPoll.isSome:
-    writeFile(result.dir / "last-poll", lastPoll.get & "\n")
+    writeFile(result.lastPollFile, lastPoll.get & "\n")
 
-proc run(sub: string, args: seq[string], ws: Workspace): string =
-  let env = newStringTable(modeCaseSensitive)
-  for k, v in envPairs():
-    env[k] = v
-  env["PATH"] = Root / "tests" / "bin" & ":" & getEnv("PATH")
-  env["FIXTURES"] = Root / "tests" / "fixtures"
-  env["REPO"] = "o/r"
-  env["TRIGGER_COMMAND"] = "/claude"
-  env["LABEL_QUEUED"] = "agent:queued"
-  env["ALLOWED_ACTORS"] = "nattoujam"
-  env["BRANCH_PREFIX"] = "agent/issue-"
-  env["COMMENT_MARKER"] = "<!-- mopu-agent -->"
-  env["LAST_POLL_FILE"] = ws.dir / "last-poll"
-  env["SEEN_FILE"] = ws.seenFile
-  let p = startProcess(Root / "bin" / "mopu", args = @["discover", sub] & args, env = env, options = {})
-  defer: p.close()
-  result = p.outputStream.readAll()
-  discard p.errorStream.readAll()
-  doAssert p.waitForExit() == 0
-
-proc tasks(sub: string, ws: Workspace): seq[JsonNode] =
-  run(sub, @[], ws).splitLines.filterIt(it.len > 0).mapIt(parseJson(it))
-
-proc seenIds(ws: Workspace): seq[string] =
-  readFile(ws.seenFile).splitLines.filterIt(it.len > 0)
-
-proc commentTasks(ws: Workspace): seq[JsonNode] =
-  tasks("comments", ws).filterIt(it["kind"].getStr == "comment")
+proc seenIds(cfg: DiscoverConfig): seq[string] =
+  readFile(cfg.seenFile).splitLines.filterIt(it.len > 0)
 
 proc taskFor(number: int): JsonNode =
   commentTasks(workspace()).filterIt(it["number"].getInt == number)[0]
@@ -49,11 +26,11 @@ proc ids(t: JsonNode): seq[string] =
 
 suite "labeled":
   test "Issue 番号の昇順で、先行する open な sub-issue を deps に載せる":
-    let got = tasks("labeled", workspace()).mapIt((it["number"].getInt, it["deps"].getElems.mapIt(it.getInt)))
+    let got = labeledTasks(workspace()).mapIt((it["number"].getInt, it["deps"].getElems.mapIt(it.getInt)))
     check got == @[(11, newSeq[int]()), (12, newSeq[int]()), (13, @[12]), (30, newSeq[int]())]
 
   test "本文と作成者をそのまま載せる":
-    check tasks("labeled", workspace())[0] == %*{
+    check labeledTasks(workspace())[0] == %*{
       "kind": "issue", "number": 11, "title": "sub-issue 1 番目", "body": "本文11", "actor": "nattoujam", "deps": [],
     }
 
@@ -109,37 +86,37 @@ suite "comments":
     check taskFor(3)["comments"][0]["instruction"].getStr == "/claude 末尾に空行が続く指示"
 
   test "自分が投稿したコメントは seen に記録して二度と拾わない":
-    let ws = workspace()
-    discard tasks("comments", ws)
-    check seenIds(ws) == @["504"]
+    let cfg = workspace()
+    discard commentTasks(cfg)
+    check seenIds(cfg) == @["504"]
 
   test "seen に記録済みのコメントは拾わない":
-    check tasks("comments", workspace(seenIds = @["501", "505", "507", "901"])).len == 0
+    check commentTasks(workspace(seenIds = @["501", "505", "507", "901"])).len == 0
 
-suite "mark-seen":
+suite "markSeen":
   test "記録する":
-    let ws = workspace()
-    discard run("mark-seen", @["1234"], ws)
-    check seenIds(ws) == @["1234"]
+    let cfg = workspace()
+    markSeen("1234", cfg)
+    check seenIds(cfg) == @["1234"]
 
   test "--retry で再処理しても重複させない":
-    let ws = workspace(seenIds = @["1234"])
-    discard run("mark-seen", @["1234"], ws)
-    check seenIds(ws) == @["1234"]
+    let cfg = workspace(seenIds = @["1234"])
+    markSeen("1234", cfg)
+    check seenIds(cfg) == @["1234"]
 
   test "空の id は無視する":
-    let ws = workspace()
-    discard run("mark-seen", @[""], ws)
-    check seenIds(ws).len == 0
+    let cfg = workspace()
+    markSeen("", cfg)
+    check seenIds(cfg).len == 0
 
-suite "init-baseline":
+suite "initSeenBaseline":
   test "last-poll が無ければ現在時刻の Z 形式で作る（過去のコメントを一斉処理しない）":
-    let ws = workspace(lastPoll = none(string))
-    discard run("init-baseline", @[], ws)
-    let written = readFile(ws.dir / "last-poll").strip
+    let cfg = workspace(lastPoll = none(string))
+    initSeenBaseline(cfg)
+    let written = readFile(cfg.lastPollFile).strip
     check written.len == 20 and written[10] == 'T' and written.endsWith("Z")
 
   test "last-poll があれば触らない":
-    let ws = workspace(lastPoll = some("2020-01-01T00:00:00Z"))
-    discard run("init-baseline", @[], ws)
-    check readFile(ws.dir / "last-poll").strip == "2020-01-01T00:00:00Z"
+    let cfg = workspace(lastPoll = some("2020-01-01T00:00:00Z"))
+    initSeenBaseline(cfg)
+    check readFile(cfg.lastPollFile).strip == "2020-01-01T00:00:00Z"

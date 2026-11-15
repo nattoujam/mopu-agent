@@ -1,0 +1,100 @@
+name: Bump and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "上げる桁"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "バージョンを直接指定する（例 1.2.3）。指定すると bump より優先する"
+        required: false
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-slim
+    outputs:
+      version: ${{ steps.ver.outputs.next }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 次のバージョンを決める
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT: ${{ inputs.version }}
+        run: |
+          if [ -n "$EXPLICIT" ]; then
+            next=$EXPLICIT
+          else
+            IFS=. read -r major minor patch < VERSION
+            case $BUMP in
+              major) next="$((major + 1)).0.0" ;;
+              minor) next="$major.$((minor + 1)).0" ;;
+              patch) next="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          if ! printf '%s\n' "$next" | grep -qxE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::バージョンは 1.2.3 の形で指定する: $next"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$next" >/dev/null; then
+            echo "::error::v$next のタグは既にある"
+            exit 1
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: VERSION を書き換えてタグを打つ
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          echo "$NEXT" > VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "バージョンを v$NEXT に上げる"
+          git tag "v$NEXT"
+          git push origin HEAD "v$NEXT"
+
+  release:
+    needs: bump
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ needs.bump.outputs.version }}
+
+      - name: Nim を入れる
+        run: |
+          nim=$(awk '$1 == "nim" { print $2 }' .tool-versions)
+          curl -fsSL "https://nim-lang.org/download/nim-$nim-linux_x64.tar.xz" | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-$nim/bin" >> "$GITHUB_PATH"
+
+      - run: nim build
+
+      - name: 求める glibc のバージョンを出す
+        run: objdump -T bin/mopu | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1
+
+      - name: release に上げる
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset=mopu-linux-x86_64
+          cp bin/mopu "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          gh release create "v$VERSION" "$asset" "$asset.sha256" --generate-notes

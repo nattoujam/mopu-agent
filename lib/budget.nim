@@ -1,5 +1,5 @@
 import std/[json, os, strutils]
-import config, log, paths, process
+import config, log, paths, process, resources
 
 type Usage* = object
   pct5h*, pct7d*, reset5h*, reset7d*: string
@@ -80,7 +80,7 @@ proc recordSpend*(cfg: Config, taskId: string, cost: float, before, after, outco
     "issue": (if t.kind == JObject and t{"number"} != nil: t["number"] else: newJNull()),
     "kind": (if t.kind == JObject and t{"kind"} != nil: t["kind"] else: newJNull()),
     "outcome": (if outcome.len == 0: newJNull() else: %outcome),
-    "denials": denials, "commit": cfg.agentCommit,
+    "denials": denials, "commit": Commit,
   }
   let f = open(spendFile, fmAppend)
   f.writeLine $row

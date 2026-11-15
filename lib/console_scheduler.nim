@@ -163,7 +163,7 @@ proc requestRun*(s: Scheduler, retry: Option[Retry]): bool =
   true
 
 proc spawnPoll(argv: seq[string], logPath: string): Pid =
-  spawn(argv, SpawnOptions(stdout: Output(path: logPath), stderrToStdout: true, cwd: agentDir,
+  spawn(argv, SpawnOptions(stdout: Output(path: logPath), stderrToStdout: true, cwd: dataDir,
                            newSession: true))
 
 proc waitPoll(pid: Pid): Future[int] {.async.} =

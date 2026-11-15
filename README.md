@@ -18,19 +18,20 @@ flowchart LR
 - `bubblewrap` と `socat` — sandbox 用。Ubuntu 24.04 以降は AppArmor のプロファイルも要る（[Sandboxing](https://code.claude.com/docs/en/sandboxing)を参照）
 - `timeout`
 - `tar` — Web コンソールのログのダウンロード用
-- `nim` — `bin/mopu` のビルドに使う。バージョンは `.tool-versions` で固定
+- Linux x86_64、glibc 2.34 以上 — `mopu` はこの環境向けのバイナリ 1 つ
+- `nim` — ソースから作るときだけ。バージョンは `.tool-versions`。`nim build` で `bin/mopu` ができる
 
 ## セットアップ
 
 ```bash
-nim build                          # bin/mopu をビルド（ソースを更新したら再度）
-cp config.env.example config.env   # コンソールの待受先など（既定のままでよければ不要）
-./bin/mopu console                 # → http://127.0.0.1:8787 の「設定」で対象リポジトリ（複数可）とユーザーを登録
-./bin/mopu setup                   # ラベル作成 + 依存確認
-./bin/mopu poll --dry-run          # 検出されるタスクを確認
+curl -fsSLo ~/.local/bin/mopu https://github.com/nattoujam/mopu-agent/releases/latest/download/mopu-linux-x86_64
+chmod +x ~/.local/bin/mopu
+mopu console            # → http://127.0.0.1:8787 の「設定」で対象リポジトリ（複数可）とユーザーを登録
+mopu setup              # ラベル作成 + 依存確認
+mopu poll --dry-run     # 検出されるタスクを確認
 ```
 
-設定は `state/settings.json` に保存される。
+設定・ログ・作業ツリーは、データの置き場に保存される。置き場は `MOPU_HOME`、未設定なら `~/.local/share/mopu-agent`（`XDG_DATA_HOME` があればその下）で、`mopu version` で確かめられる。コンソールの待受先などは、データの置き場の `config.env` に書く（ひな形は [config.env.example](config.env.example)）。
 
 ### GitHub App を登録する
 
@@ -63,7 +64,7 @@ bot の登録と会話での有効化は Nextcloud 側で行う（[Talk の bot 
 
 ### ラベルでトリガーする
 
-Issue に `agent:queued` を付けて `./bin/mopu poll` を実行する。
+Issue に `agent:queued` を付けて `mopu poll` を実行する。
 
 ```
 agent:queued ──▶ agent:running ──▶ agent:done
@@ -81,7 +82,7 @@ agent:queued ──▶ agent:running ──▶ agent:done
 依頼が曖昧なときは、エージェントは実装せず質問をコメントし、`agent:awaiting-input` で止まる。
 `/claude` に続けて回答を書くと、同じ会話の続きとして作業が再開する。
 
-`agent:failed` で止まった Issue は、`./bin/mopu poll --retry <番号>` で止まった段階からやり直せる。
+`agent:failed` で止まった Issue は、`mopu poll --retry <番号>` で止まった段階からやり直せる。
 
 ### コメントでトリガーする
 
@@ -131,13 +132,13 @@ PR の中で書き換えた指示は、マージしてベースブランチに�
 
 ### オプション
 
-`./bin/mopu --help` と `./bin/mopu poll --help` を参照。
+`mopu --help` と `mopu poll --help` を参照。
 
 ## 制限
 
 - エージェントは sandbox の中で動く。書き込みは作業ディレクトリだけ、Bash からの通信はパッケージレジストリと GitHub API だけで、`docker` は使えない。
   docker が要る検証は、設定に登録したものだけをホストのコンテナで回せる。それ以外は CI に任せる。
-- `mopu poll` 単体では自動起動しない。定期実行するなら Web コンソール（`./bin/mopu console`）を使う。間隔は控えめにすること。
+- `mopu poll` 単体では自動起動しない。定期実行するなら Web コンソール（`mopu console`）を使う。間隔は控えめにすること。
 - コンソールは認証を持たない。触れる人は、依存の準備コマンドとコンテナの検証を通じてホスト上で任意のコマンドを実行できる。
   前段のプロキシで `Host` を書き換えると、画面から操作できなくなる。
 - 計測タブの差し戻しの分類は LLM で行う。差し戻し 1 件につき 1 回分の利用枠を使う。

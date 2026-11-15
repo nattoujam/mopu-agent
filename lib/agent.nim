@@ -1,5 +1,5 @@
 import std/[json, os, strutils]
-import budget, config, github_app, hooks, log, paths, process
+import budget, config, github_app, hooks, log, paths, process, resources
 
 type PollState* = ref object
   cfg*: Config
@@ -12,8 +12,8 @@ proc refreshUsage*(p: PollState): string =
   p.usage = parseUsage(fetchUsage(p.cfg))
   if p.usage.known: p.usage.pct5h else: ""
 
-proc relToAgent*(path: string): string =
-  if path.startsWith(agentDir & "/"): path[agentDir.len + 1 .. ^1] else: path
+proc relToData*(path: string): string =
+  if path.startsWith(dataDir & "/"): path[dataDir.len + 1 .. ^1] else: path
 
 proc abs(path: string): string =
   if path.startsWith("/"): "/" & path else: path
@@ -26,7 +26,7 @@ proc command(sub: string): JsonNode = %*{"type": "command", "command": mopuBin &
 proc buildAgentSettings*(cfg: Config, taskDir, output: string): bool =
   let wt = taskDir / repoSubdir
   # permissions の Read は Read ツールに、sandbox の denyRead は Bash にしか効かない
-  let secrets = [agentDir / "config.env", stateDir, appKeyFile]
+  let secrets = [configEnvFile, stateDir, appKeyFile]
   let link = (try: readFile(wt / ".git").strip(leading = false, chars = {'\n'}) except IOError: "")
   if not link.startsWith("gitdir: ") or link.len == "gitdir: ".len:
     err "worktree の .git を読めません: " & wt
@@ -34,7 +34,7 @@ proc buildAgentSettings*(cfg: Config, taskDir, output: string): bool =
   let admin = link["gitdir: ".len .. ^1]
   let repoGit = cfg.repoDir / ".git"
   let host = runContainerCommand() & " *"
-  var s = parseFile(agentSettingsFile)
+  var s = parseJson(AgentSettingsJson)
 
   var allow = %*["Read(" & abs(wt) & "/**)", "Edit(" & abs(wt) & "/**)", "Bash(" & host & ")"]
   for a in s["permissions"]["allow"]: allow.add a

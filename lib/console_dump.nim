@@ -1,15 +1,8 @@
 import std/[algorithm, asyncdispatch, json, options, os, strutils, tempfiles, times]
-import async_process, console_state, console_tasks, process
+import async_process, console_state, console_tasks, resources
 
 const dumpStateFiles = ["settings.json", "spend.jsonl", "console-runs.jsonl", "loop-metrics.json",
                         "followup-categories.jsonl"]
-
-proc agentCommit(): string =
-  let sha = capture("git", ["-C", agentDir, "rev-parse", "--short", "HEAD"])
-  let status = capture("git", ["-C", agentDir, "status", "--porcelain"])
-  if sha.exitCode != 0 or status.exitCode != 0:
-    return "unknown"
-  sha.output.strip & (if status.output.strip.len > 0: "-dirty" else: "")
 
 proc stampedSince(name: string, cutoff: Option[Time]): bool =
   if cutoff.isNone:
@@ -114,7 +107,7 @@ proc redact*(data: string): (string, int) =
 
 # 標準ライブラリに tar と gzip が無いため、伏せたコピーを一時ディレクトリに書いて tar で固めている。
 proc buildDump*(label: string, files: seq[string], scope: JsonNode): Future[(string, string)] {.async.} =
-  let commit = agentCommit()
+  let commit = Commit
   let root = "mopu-" & label & "-" & commit
   let work = createTempDir("mopu-dump-", "")
   defer: removeDir(work)
@@ -129,7 +122,7 @@ proc buildDump*(label: string, files: seq[string], scope: JsonNode): Future[(str
     let (clean, n) = redact(data)
     redacted += n
     inc count
-    let rel = root / path.relativePath(agentDir)
+    let rel = root / path.relativePath(dataDir)
     createDir(work / rel.parentDir)
     writeFile(work / rel, clean)
     list.add rel

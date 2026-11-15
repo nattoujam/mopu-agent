@@ -1,6 +1,6 @@
 import std/[algorithm, json, os, sequtils, strutils, times]
 import agent, budget, ci_gate, config, critic, crypto, github, github_app, history, hooks, log, outcome, phases,
-       plan, process, project_memory, paths, workspace
+       plan, process, project_memory, resources, workspace
 
 const
   # 失敗した state を --retry でやり直すとき、その state より前の結果を前回のログから引き継ぐファイル
@@ -58,8 +58,6 @@ proc leadQuote(s: string): string =
   if s.len == 0: return ""
   let cut = s.find("\n\n")
   mdQuote(if cut >= 0: s[0 ..< cut] else: s)
-
-proc promptFile(name: string): string = readFile(promptsDir / name)
 
 proc phaseHeader(name: string): string =
   "# フェーズ: " & name & "\n\nこのメッセージは mopu-agent からの、このフェーズの指示です。"
@@ -482,12 +480,12 @@ proc endWithQuestion(t: Task) =
 
 proc stateTriage(t: Task): bool =
   let entry = t.state["triage-".len .. ^1]
-  var body = phaseHeader("1. 把握（" & t.state & "）") & "\n\n" & promptFile("triage.md") & "\n" &
-    promptFile("triage" / entry & ".md")
+  var body = phaseHeader("1. 把握（" & t.state & "）") & "\n\n" & prompt("triage.md") & "\n" &
+    prompt("triage" / entry & ".md")
   if t.pr == nil:
-    body.add "\n" & promptFile("decompose.md").replace("%%MAX_SUB_ISSUES%%", $t.cfg.maxSubIssues)
+    body.add "\n" & prompt("decompose.md").replace("%%MAX_SUB_ISSUES%%", $t.cfg.maxSubIssues)
   if t.kind == "comment":
-    body.add "\n" & promptFile("replies.md")
+    body.add "\n" & prompt("replies.md")
   body.add "\n" & t.taskMaterial & "\n" & t.prMaterial
   if entry == "plan":
     let pending = latestPlanComment(t.cfg, t.number)
@@ -525,11 +523,11 @@ proc stateTriage(t: Task): bool =
 proc stateImplement(t: Task): bool =
   let note = trimNewlines(text(readJson(t.log / "triage.json"), "note"))
   t.phase("implement", "", if note.len > 0: mdQuote(note) else: "")
-  var body = phaseHeader("2. 実装") & "\n\n" & promptFile("implement.md")
+  var body = phaseHeader("2. 実装") & "\n\n" & prompt("implement.md")
   if t.cfg.setupCmd.len > 0:
-    body.add "\n" & trimNewlines(promptFile("setup.md")).replace("%%SETUP_CMD%%", t.cfg.setupCmd) & "\n"
+    body.add "\n" & trimNewlines(prompt("setup.md")).replace("%%SETUP_CMD%%", t.cfg.setupCmd) & "\n"
   if t.cfg.containerChecks.len > 0:
-    body.add "\n" & promptFile("container.md").replace("%%RUN_CMD%%", runContainerCommand())
+    body.add "\n" & prompt("container.md").replace("%%RUN_CMD%%", runContainerCommand())
     for c in t.cfg.containerChecks:
       let workdir = text(c, "workdir")
       body.add "- `" & text(c, "name") & "`: `" & text(c, "command") & "`（イメージ: `" & text(c, "image") &
@@ -548,7 +546,7 @@ proc stateImplement(t: Task): bool =
 
 proc runFix(t: Task, material: string): bool =
   t.phase("verify", "fix")
-  let body = phaseHeader("3. 検証の修正") & "\n\n" & promptFile("fix.md") & "\n" & material
+  let body = phaseHeader("3. 検証の修正") & "\n\n" & prompt("fix.md") & "\n" & material
   if not t.callAgent("fix", trimNewlines(body)):
     return false
   t.fix = text(t.outcome, "decision")
@@ -633,13 +631,13 @@ proc stateVerify(t: Task): bool =
 
 proc stateReport(t: Task): bool =
   let verifyReason = trimNewlines(text(t.verifyData, "reason"))
-  var body = phaseHeader("4. 公開（report）") & "\n\n" & promptFile("report.md").replace("%%BASE_BRANCH%%", t.cfg.baseBranch)
+  var body = phaseHeader("4. 公開（report）") & "\n\n" & prompt("report.md").replace("%%BASE_BRANCH%%", t.cfg.baseBranch)
   if t.prOurs:
-    body.add "\n### PR テンプレート\n\n```markdown\n" & promptFile("pr-body.md") & "```\n"
+    body.add "\n### PR テンプレート\n\n```markdown\n" & prompt("pr-body.md") & "```\n"
   else:
     body.add "\n作業先の PR は mopu-agent 以外が作ったものなので、PR 本文（pr_body）は書かない。\n"
   if t.kind == "comment":
-    body.add "\n" & promptFile("replies.md") & "\n返信が要るコメント ID: " & t.commentIds & "\n"
+    body.add "\n" & prompt("replies.md") & "\n返信が要るコメント ID: " & t.commentIds & "\n"
   body.add "\n## 検証の結果\n\n"
   if verifyReason.len == 0:
     body.add "CI とレビュアーの確認を通った。\n"
@@ -715,7 +713,7 @@ proc taskFailed(t: Task) =
       gitRun(t.wt, "status", "--short").output &
       gitRun(t.wt, "diff", "HEAD").output)
   var body = "エージェントの作業が `" & t.state & "` で止まりました。\n\n" & mdQuote(t.failReason) &
-    "\n\nログ: `" & relToAgent(t.log) & "`"
+    "\n\nログ: `" & relToData(t.log) & "`"
   let setupLog = t.log / "setup.log"
   if t.state == "prepare" and fileExists(setupLog) and getFileSize(setupLog) > 0:
     let lines = readFile(setupLog).strip(leading = false, chars = {'\n'}).splitLines
@@ -809,10 +807,10 @@ proc runTask*(p: PollState, task: JsonNode): bool =
 
   createDir(t.log)
   var saved = task.copy
-  saved["commit"] = %p.cfg.agentCommit
+  saved["commit"] = %Commit
   writeLine(t.log / TaskFileName, $saved)
 
-  t.sysPrompt = trimNewlines(promptFile("agent.md"))
+  t.sysPrompt = trimNewlines(prompt("agent.md"))
   # state/repos/*/sessions.json に残っている値と揃えるため、末尾に改行を足してハッシュする
   t.sysHash = sha256Hex(t.sysPrompt & "\n")[0 ..< 16]
   t.memory = projectMemoryPrompt(p.cfg.repoDir, "origin/" & p.cfg.baseBranch)

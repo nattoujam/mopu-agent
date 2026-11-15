@@ -1,8 +1,7 @@
 import std/[algorithm, asyncdispatch, asynchttpserver, json, math, nativesockets, options, os, posix, strutils,
             tables, times, uri]
-import console_dump, console_scheduler, console_settings, console_state, console_tasks
+import console_dump, console_scheduler, console_settings, console_state, console_tasks, resources
 
-let allowRemote = getEnv("CONSOLE_ALLOW_REMOTE") == "1"
 var allowedHosts: seq[string]
 var scheduler: Scheduler
 
@@ -108,7 +107,7 @@ proc sendDump(req: Request, dump: (string, string)) {.async.} =
                  @[("Content-Disposition", "attachment; filename=\"" & dump[0] & "\"")])
 
 proc hostAllowed(req: Request): bool =
-  allowRemote or req.header("host").get("").toLowerAscii in allowedHosts
+  req.header("host").get("").toLowerAscii in allowedHosts
 
 proc writeRejection(req: Request): Option[(HttpCode, string)] =
   let ctype = req.header("content-type").get("").split(';')[0].strip.toLowerAscii
@@ -147,17 +146,13 @@ proc handleGet(req: Request, path: string) {.async.} =
   const tasksPrefix = "/api/tasks/"
   case path
   of "/", "/index.html":
-    let page = webDir / "index.html"
-    if not fileExists(page):
-      await req.sendError(Http500, "web/index.html がありません")
-    else:
-      await req.send(Http200, readFile(page), "text/html; charset=utf-8")
+    await req.send(Http200, IndexHtml, "text/html; charset=utf-8")
   of "/api/status": await req.sendJson(status())
   of "/api/settings": await req.sendReply(settingsReply())
   of "/api/github-app": await req.sendReply(appReply())
   of "/api/notify": await req.sendReply(notifyReply())
   of "/api/states":
-    await req.send(Http200, readFile(agentDir / "lib" / "states.json"))
+    await req.send(Http200, StatesJson)
   of "/api/tasks":
     let q = req.queryValue("q").get("").strip
     var rows = newJArray()
@@ -357,10 +352,6 @@ proc main(): Future[int] {.async.} =
   scheduler = newScheduler()
   let host = (let h = getEnv("CONSOLE_HOST"); if h.len > 0: h else: "127.0.0.1")
   let port = (let p = getEnv("CONSOLE_PORT"); if p.len > 0: parseInt(p) else: 8787)
-  if host notin ["127.0.0.1", "::1", "localhost"] and not allowRemote:
-    log host & " での待受は拒否します。認証がないため loopback 以外に晒すのは危険です"
-    log "それでも公開する場合は CONSOLE_ALLOW_REMOTE=1 を設定し、前段で認証をかけてください"
-    return 1
   for h in ["127.0.0.1", "localhost", "[::1]"]:
     allowedHosts.add h & ":" & $port
   createDir(runLogDir)

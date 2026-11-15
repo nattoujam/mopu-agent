@@ -1,6 +1,6 @@
 import std/os
-import agent_checks, ci_gate, config, console, critic, discover, github_app, hooks, log, loop_metrics, notify, poll,
-       run_container, setup
+import agent_checks, ci_gate, config, console, critic, github_app, hooks, log, loop_metrics, notify, paths,
+       poll, resources, run_container, setup
 
 const Usage = """使い方: mopu <サブコマンド> [引数 ...]
 
@@ -11,12 +11,14 @@ const Usage = """使い方: mopu <サブコマンド> [引数 ...]
   check agent-runtime         Claude Code の sandbox と hook の挙動を実測する
   check sandbox-placeholders  sandbox が置く placeholder を実測する
   app-check <App ID> <鍵>     GitHub App の ID と秘密鍵の組を確かめる
+  version                     バージョンとデータの置き場を表示する
+
+データは MOPU_HOME（無ければ $XDG_DATA_HOME/mopu-agent か ~/.local/share/mopu-agent）に置く。
 
 エージェントや内部から呼ばれるもの:
   run-container <検証のキー> [引数 ...]
   hook phase-gate|phase-guard|guard-host-commands
   notify <設定> [--silent] <本文>
-  discover <種類>
   ci-gate inspect <worktree> <origin/BASE> <BASE>
   critic"""
 
@@ -49,11 +51,14 @@ proc dispatch(args: seq[string]): int =
     checkMain(rest)
   of "app-check": appCheckMain(rest)
   of "notify": notifyMain(rest)
-  of "discover": discoverMain(rest); 0
   of "ci-gate": ciGateMain(rest)
   of "critic": criticMain()
   of "run-container": runContainerMain(rest)
   of "hook": hookMain(rest)
+  of "version", "--version":
+    echo "mopu-agent " & Version & " (" & Commit & ")"
+    echo "データの置き場: " & dataDir
+    0
   of "-h", "--help":
     echo Usage
     0

@@ -1,74 +1,61 @@
-import std/[asyncdispatch, asynchttpserver, json, os, osproc, streams, strutils, tables, tempfiles, unittest, uri]
+import std/[asyncdispatch, asynchttpserver, json, os, strutils, tempfiles, unittest, uri]
 import ../lib/notify
 
 const
-  Root = currentSourcePath().parentDir.parentDir
   Secret = "test-secret-0123456789"
   Room = "abc123"
 
-type Received = object
-  url: string
-  headers: Table[string, string]
-  body: JsonNode
-
 var
-  received: seq[Received]
-  replies: seq[(HttpCode, string)]
+  ports: Channel[int]
+  received: Channel[string]
+  replies: Channel[int]
 
-proc handler(req: Request) {.async.} =
-  var headers: Table[string, string]
+proc onRequest(req: Request) {.async, gcsafe.} =
+  var headers = newJObject()
   for key, value in req.headers:
-    headers[key.toLowerAscii] = value
-  received.add Received(url: $req.url, headers: headers, body: parseJson(req.body))
-  let (code, body) = if replies.len > 0: replies.pop() else: (Http201, "{}")
-  await req.respond(code, body, newHttpHeaders({"Content-Type": "application/json"}))
+    headers[key.toLowerAscii] = %value
+  received.send $(%*{"url": $req.url, "headers": headers, "body": parseJson(req.body)})
+  let (replied, code) = replies.tryRecv()
+  await req.respond(if replied: HttpCode(code) else: Http201, "{}",
+                    newHttpHeaders({"Content-Type": "application/json"}))
 
-let server = newAsyncHttpServer()
-server.listen(Port(0), "127.0.0.1")
-let baseUrl = "http://127.0.0.1:" & $server.getPort.int
-
-# テストのために 1 スレッドで動かしており、グローバルを読むハンドラを
-# acceptRequest が求める gcsafe として渡すため。
-proc acceptLoop() {.async.} =
+# send は同期の HTTP クライアントで応答を待つので、受け手は別のスレッドで動かす
+proc serve() {.thread.} =
+  let server = newAsyncHttpServer()
+  server.listen(Port(0), "127.0.0.1")
+  ports.send server.getPort.int
   while true:
-    await server.acceptRequest(proc (req: Request): Future[void] {.closure, gcsafe.} =
-      {.cast(gcsafe).}:
-        result = handler(req))
+    waitFor server.acceptRequest(onRequest)
 
-asyncCheck acceptLoop()
-
-proc runNotify(args: varargs[string]): tuple[code: int, stderr: string] =
-  let config = createTempDir("notify-test-", "") / "nextcloud.json"
-  writeFile(config, $(%*{"url": baseUrl & "/", "room": Room, "secret": Secret}))
-  let p = startProcess(Root / "bin" / "mopu", args = @["notify", config] & @args)
-  defer: p.close()
-  while p.running:
-    poll(20)
-  result.stderr = p.errorStream.readAll()
-  result.code = p.waitForExit()
+ports.open()
+received.open()
+replies.open()
+var serverThread: Thread[void]
+createThread(serverThread, serve)
+let config = createTempDir("notify-test-", "") / "nextcloud.json"
+writeFile(config, $(%*{"url": "http://127.0.0.1:" & $ports.recv() & "/", "room": Room, "secret": Secret}))
 
 suite "sign":
   test "HMAC-SHA256 の hex（RFC 4231 の test case 2）":
     check sign("Jefe", "what do ya ", "want for nothing?") ==
       "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
 
-suite "notify":
-  setup:
-    received.setLen(0)
-    replies.setLen(0)
-
+suite "send":
   test "random と message の HMAC を署名に付けて、会話の bot API に送る":
-    check runNotify("--silent", "テスト", "の本文").code == 0
-    check received.len == 1
-    let req = received[0]
-    check req.url == "/ocs/v2.php/apps/spreed/api/v1/bot/" & Room & "/message"
-    check req.headers["ocs-apirequest"] == "true"
-    check req.body == %*{"message": "テスト の本文", "silent": true}
-    let random = req.headers["x-nextcloud-talk-bot-random"]
-    check req.headers["x-nextcloud-talk-bot-signature"] == sign(Secret, random, "テスト の本文")
+    send(readConfig(config), "テスト の本文", true)
+    let req = parseJson(received.recv())
+    check req["url"].getStr == "/ocs/v2.php/apps/spreed/api/v1/bot/" & Room & "/message"
+    check req["headers"]["ocs-apirequest"].getStr == "true"
+    check req["body"] == %*{"message": "テスト の本文", "silent": true}
+    let random = req["headers"]["x-nextcloud-talk-bot-random"].getStr
+    check req["headers"]["x-nextcloud-talk-bot-signature"].getStr == sign(Secret, random, "テスト の本文")
 
-  test "送れなかったら、ステータスを stderr に出して 1 で終わる":
-    replies = @[(Http401, "unauthorized")]
-    let (code, stderr) = runNotify("届かない")
-    check code == 1
-    check "HTTP 401" in stderr
+  test "送れなかったら、ステータスをメッセージに入れて IOError を投げる":
+    replies.send 401
+    expect IOError:
+      try:
+        send(readConfig(config), "届かない", false)
+      except IOError as e:
+        check "HTTP 401" in e.msg
+        raise
+    discard received.recv()

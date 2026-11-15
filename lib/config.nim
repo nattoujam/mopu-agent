@@ -1,5 +1,5 @@
 import std/[algorithm, json, os, strutils]
-import log, paths, process
+import log, paths, process, resources
 
 const
   CommentMarker* = "<!-- mopu-agent -->"
@@ -17,7 +17,7 @@ const
   TaskFileName* = "task.json"
 
 type Config* = ref object
-  appId*, claudeBin*, agentCommit*: string
+  appId*, claudeBin*: string
   triggerCommand*, model*, taskTimeout*: string
   maxTaskBudgetUsd*: float
   max5hPercent*, max7dPercent*, maxTasksPerRun*, maxSubIssues*: int
@@ -33,10 +33,9 @@ proc unquote(v: string): string =
   if v.len >= 2 and v[0] == v[^1] and v[0] in {'"', '\''}: v[1 .. ^2] else: v
 
 proc loadConfigEnv*() =
-  let path = agentDir / "config.env"
-  if not fileExists(path):
+  if not fileExists(configEnvFile):
     return
-  for raw in readFile(path).splitLines:
+  for raw in readFile(configEnvFile).splitLines:
     let line = raw.strip
     if line.len == 0 or line[0] == '#':
       continue
@@ -49,7 +48,8 @@ proc loadConfigEnv*() =
 
 proc loadSettingsFile*(): JsonNode =
   if not fileExists(settingsFile):
-    die "設定がありません。mopu console を起動し、画面の「設定」から登録してください"
+    die "設定がありません（" & settingsFile & "）。データの置き場が違うなら MOPU_HOME を指定してください。" &
+      "初めてなら mopu console を起動し、画面の「設定」から登録してください"
   try:
     result = parseFile(settingsFile)
   except CatchableError:
@@ -79,20 +79,11 @@ proc str(n: JsonNode): string =
 proc toInt(n: JsonNode): int =
   if n.kind == JInt: n.getInt else: n.getFloat.int
 
-proc agentCommit*(): string =
-  let sha = capture("git", ["-C", agentDir, "rev-parse", "--short", "HEAD"])
-  if sha.exitCode != 0:
-    return "unknown"
-  result = sha.output.strip
-  if capture("git", ["-C", agentDir, "status", "--porcelain"]).output.strip.len > 0:
-    result.add "-dirty"
-
 proc resolveClaudeBin(): string =
   result = getEnv("CLAUDE_BIN", "claude")
-  # エージェントは cd したうえで起動するため、パス指定は AGENT_DIR 基準で絶対パスに直しておく
+  # エージェントは cd したうえで起動するため、パス指定は絶対パスに直しておく
   if '/' in result:
-    if not result.isAbsolute:
-      result = agentDir / (if result.startsWith("./"): result[2 .. ^1] else: result)
+    result = absolutePath(result).normalizedPath
     if not fileExists(result) or fpUserExec notin getFilePermissions(result):
       die "CLAUDE_BIN を実行できません: " & result
   elif findExe(result).len == 0:
@@ -101,7 +92,7 @@ proc resolveClaudeBin(): string =
 
 proc loadGlobalConfig*(): Config =
   let settings = loadSettingsFile()
-  let schema = parseFile(schemaFile)
+  let schema = parseJson(SchemaJson)
   let g = settings{"global"}
   let defs = schema["global"]
   result = Config(
@@ -121,9 +112,7 @@ proc loadGlobalConfig*(): Config =
   if not fileExists(appKeyFile):
     die "GitHub App の秘密鍵がありません。コンソールで App を削除して登録し直してください"
   if getFilePermissions(appKeyFile) != {fpUserRead, fpUserWrite}:
-    die "秘密鍵の権限が 600 ではありません: " & appKeyFile.relativePath(agentDir)
-  result.agentCommit = agentCommit()
-  putEnv("AGENT_COMMIT", result.agentCommit)
+    die "秘密鍵の権限が 600 ではありません: " & appKeyFile
   createDir(stateDir)
   if not fileExists(spendFile):
     writeFile(spendFile, "")
@@ -134,7 +123,7 @@ proc loadConfig*(repo: string): Config =
   let r = settings{"repos", repo}
   if r == nil:
     die "設定にないリポジトリです: " & repo
-  let defs = parseFile(schemaFile)["repo"]
+  let defs = parseJson(SchemaJson)["repo"]
   if '/' notin repo:
     die "設定: リポジトリは owner/repo 形式で指定してください (現在: " & repo & ")"
   result.repo = repo

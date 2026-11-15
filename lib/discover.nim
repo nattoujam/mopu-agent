@@ -281,25 +281,6 @@ proc nextLearnBatch*(prs: seq[MergedPr], runs: seq[SpendRun], learned, repo, pre
     .sorted(proc (a, b: MergedPr): int = cmp(parseIso(a.mergedAt), parseIso(b.mergedAt)))
   if pending.len >= LearnBatchSize: pending[0 ..< LearnBatchSize] else: @[]
 
-proc loadDiscoverConfig(): DiscoverConfig =
-  proc need(name: string): string =
-    result = getEnv(name)
-    if result.len == 0:
-      stderr.writeLine name & " が渡されていません（load_config で export してください）"
-      quit 1
-  DiscoverConfig(
-    repo: need("REPO"),
-    trigger: need("TRIGGER_COMMAND"),
-    labelQueued: need("LABEL_QUEUED"),
-    allowedActors: need("ALLOWED_ACTORS"),
-    branchPrefix: need("BRANCH_PREFIX"),
-    commentMarker: need("COMMENT_MARKER"),
-    lastPollFile: need("LAST_POLL_FILE"),
-    seenFile: need("SEEN_FILE"),
-    spendFile: getEnv("SPEND_FILE"),
-    learnedFile: getEnv("LEARNED_FILE"),
-  )
-
 proc gh(args: openArray[string]): string =
   let (output, code) = capture("gh", args)
   if code == 0: output else: ""
@@ -562,22 +543,3 @@ proc initSeenBaseline*(cfg: DiscoverConfig) =
     return
   writeFile(cfg.lastPollFile, utcStamp(getTime()) & "\n")
   log "初回実行のため、これ以降に投稿されたコメントのみを対象にします"
-
-proc discoverMain*(args: seq[string]) =
-  let sub = if args.len > 0: args[0] else: ""
-  let cfg = loadDiscoverConfig()
-  case sub
-  of "labeled":
-    for t in labeledTasks(cfg): stdout.writeLine $t
-  of "comments":
-    for t in commentTasks(cfg): stdout.writeLine $t
-  of "open-branches":
-    for b in openAgentBranches(cfg): stdout.writeLine b
-  of "mark-seen": markSeen(if args.len > 1: args[1] else: "", cfg)
-  of "init-baseline": initSeenBaseline(cfg)
-  of "learn-source":
-    let t = learnTask(cfg)
-    if t != nil: stdout.writeLine $t
-  else:
-    stderr.writeLine "使い方: discover labeled|comments|open-branches|mark-seen <id>|init-baseline|learn-source"
-    quit 1

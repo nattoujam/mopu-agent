@@ -1,5 +1,5 @@
 import std/[algorithm, asyncdispatch, json, math, options, os, posix, sequtils, sets, strutils, unicode]
-import async_process, console_state, process
+import async_process, console_state, process, resources
 
 type
   Reply* = object
@@ -9,7 +9,7 @@ type
   SettingsError = object of ValueError
     field: string
 
-let schema* = parseJson(readFile(schemaFile))
+let schema* = parseJson(SchemaJson)
 
 proc reply*(body: JsonNode, code = 200): Reply =
   Reply(code: code, body: body)

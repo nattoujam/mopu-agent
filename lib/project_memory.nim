@@ -1,9 +1,9 @@
 # エージェントは --setting-sources '' で起動するので、Claude Code 自身は対象リポジトリの
-# CLAUDE.md も .claude/rules/ も読まない。ここで origin の版を読んでシステムプロンプトに足す。
-# worktree の版を読まないのは、エージェントが PR の中で書き換えた基準を次の周回に効かせないため
+# CLAUDE.md も .claude/rules/ も読まない。ここで origin にある内容を読んでシステムプロンプトに足す。
+# worktree の内容を読まないのは、エージェントが PR の中で書き換えた基準を次の周回に効かせないため
 
 import std/[os, sets, strutils, unicode]
-import paths, process
+import process, resources
 
 const
   MaxChars = 60000
@@ -206,7 +206,7 @@ proc projectMemoryPrompt*(gitdir, refName: string): string =
 
   if l.output.len == 0:
     return ""
-  result = readFile(promptsDir / "project-memory.md").replace("%%REF%%", refName) & l.output & "\n"
+  result = prompt("project-memory.md").replace("%%REF%%", refName) & l.output & "\n"
   if l.skipped.len > 0:
     result.add "\n（" & $MaxChars & " 文字の上限を超えたため、次は載せていない。必要なら作業ツリーで読むこと: " &
       l.skipped.join(" ") & "）\n"

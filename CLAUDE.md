@@ -2,7 +2,9 @@
 
 ## 動作を確かめる
 
-`bin/mopu` は、起動したときにソースから作り直されない。`lib/` を変えたら、動かす前に `nim build` を実行する。テストは `nim test` で回す。
+`bin/mopu` は、起動したときにソースから作り直されない。`lib/resources.nim` が埋め込むファイル（prompts など）もビルドのときにバイナリへ入る。`lib/` や埋め込むファイルを変えたら、動かす前に `nim build` を実行する。テストは `nim test` で回す。
+
+`bin/mopu` はデータを `MOPU_HOME` から読み書きする。未設定のときの置き場とデータの中身は `lib/paths.nim` が決める。今どこを使っているかは `./bin/mopu version` で確かめる。
 
 LLM を呼ばずに `mopu poll` の分岐を確かめるときは、`CLAUDE_BIN` を `tools/fake-agent` に向ける。
 fake-agent は `MOPU_PHASE`（今の state）ごとに出口ファイルを書く。どの出口にするかは `FAKE_AGENT_TRIAGE` などの環境変数で切り替える。変数と既定値は `tools/fake-agent` の先頭にある。
@@ -29,4 +31,4 @@ sandbox が作業ディレクトリに置く書き込み禁止の placeholder �
 更新したら `./bin/mopu check sandbox-placeholders` を実行する。Claude Code へのログインが要り、利用枠を少し使う。
 足りない placeholder が出たら、`lib/workspace.nim` の `SandboxPlaceholders` に足す。
 
-`./bin/mopu check agent-runtime` も実行する。タスクの実行が頼っている Claude Code の挙動（sandbox の中の Bash の自動許可、Stop hook の差し戻し、PreToolUse hook の拒否）を実測する。
+`./bin/mopu check agent-runtime` も実行する。タスクの実行が頼っている Claude Code の挙動を実測する。検査の中身は `lib/agent_checks.nim` の `checkAgentRuntime` にある。

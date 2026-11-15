@@ -1,17 +1,21 @@
 import std/os
 
+proc defaultDataDir(): string =
+  let home = getEnv("MOPU_HOME")
+  if home.len > 0:
+    return absolutePath(home)
+  let xdg = getEnv("XDG_DATA_HOME")
+  (if xdg.len > 0: xdg else: getHomeDir() / ".local" / "share") / "mopu-agent"
+
 let
   mopuBin* = getAppFilename()
-  agentDir* = (let d = getEnv("AGENT_DIR"); if d.len > 0: d else: mopuBin.parentDir.parentDir)
-  stateDir* = agentDir / "state"
-  logsDir* = agentDir / "logs"
-  reposRoot* = agentDir / "repos"
-  worktreesRoot* = agentDir / "worktrees"
+  dataDir* = defaultDataDir()
+  configEnvFile* = dataDir / "config.env"
+  stateDir* = dataDir / "state"
+  logsDir* = dataDir / "logs"
+  reposRoot* = dataDir / "repos"
+  worktreesRoot* = dataDir / "worktrees"
   runLogDir* = logsDir / "console"
-  webDir* = agentDir / "web"
-  promptsDir* = agentDir / "prompts"
-  schemaFile* = agentDir / "settings" / "schema.json"
-  agentSettingsFile* = agentDir / "settings" / "agent-settings.json"
   settingsFile* = stateDir / "settings.json"
   runsFile* = stateDir / "console-runs.jsonl"
   spendFile* = stateDir / "spend.jsonl"
