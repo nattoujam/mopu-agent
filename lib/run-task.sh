@@ -192,7 +192,7 @@ build_agent_settings() {
   local -a secret_paths=("$AGENT_DIR/config.env" "$AGENT_DIR/state" "$APP_PRIVATE_KEY")
   local secrets_json
   secrets_json=$(printf '%s\n' "${secret_paths[@]}" | jq -R . | jq -sc .)
-  local tools="$AGENT_DIR/tools" admin
+  local admin
   [[ $(<"$wt/.git") =~ ^gitdir:\ (.+)$ ]] || { err "worktree の .git を読めません: $wt"; return 1; }
   admin="${BASH_REMATCH[1]}"
 
@@ -203,17 +203,17 @@ build_agent_settings() {
   # 書き換えると別の hooks を差し込めるため同様に閉じる。info/ は無視リストを持ち、
   # 書き換えると未コミットの変更を git status から隠せるため閉じる
   jq --arg wt "$wt" --arg repo_git "$REPO_DIR/.git" --arg admin "$admin" \
-     --argjson secrets "$secrets_json" --arg tools "$tools" \
+     --argjson secrets "$secrets_json" --arg mopu "$MOPU_BIN" \
     'def abs: sub("^/"; "//");
-     ["\($tools)/run-container *"] as $host_cmds
+     ["\($mopu) run-container *"] as $host_cmds
      | .permissions.allow = (
         ["Read(\($wt | abs)/**)", "Edit(\($wt | abs)/**)"]
         + ($host_cmds | map("Bash(\(.))")) + .permissions.allow)
      | .sandbox.excludedCommands = $host_cmds
      | .hooks.PreToolUse = [
-        {matcher: "Bash", hooks: [{type: "command", command: "\($tools)/guard-host-commands"}]},
-        {matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($tools)/phase-guard"}]}]
-     | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/phase-gate"}]}]
+        {matcher: "Bash", hooks: [{type: "command", command: "\($mopu) hook guard-host-commands"}]},
+        {matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($mopu) hook phase-guard"}]}]
+     | .hooks.Stop = [{hooks: [{type: "command", command: "\($mopu) hook phase-gate"}]}]
      | .permissions.deny = (
         ($secrets | map("Read(\(. | abs))", "Read(\(. | abs)/**)"))
         + ["Edit(\($wt | abs)/.git)", "Edit(\($wt | abs)/.git/**)"]
@@ -338,7 +338,7 @@ call_agent() {
     return 1
   fi
   local problem
-  problem=$(export "${env_args[@]}"; outcome_problem "$state" "$TASK_WT")
+  problem=$(export "${env_args[@]}"; "$MOPU_BIN" outcome-problem "$state" "$TASK_WT")
   if [[ -n $problem ]]; then
     TASK_FAIL_REASON="終える条件を満たしませんでした: $problem"
     return 1
@@ -538,7 +538,7 @@ state_implement() {
     fi
     if [[ $CONTAINER_CHECKS != '[]' ]]; then
       printf '\n'
-      sed -e "s|%%RUN_CMD%%|$AGENT_DIR/tools/run-container|g" "$AGENT_DIR/prompts/container.md"
+      sed -e "s|%%RUN_CMD%%|$MOPU_BIN run-container|g" "$AGENT_DIR/prompts/container.md"
       jq -r '.[] | "- `\(.name)`: `\(.command)`（イメージ: `\(.image)`、作業ディレクトリ: `\(if .workdir == "" then "." else .workdir end)`、上限 \(.timeout)）"' <<<"$CONTAINER_CHECKS"
     fi
     [[ -n $note ]] && printf '\n## 把握で決めた方針\n\n%s\n' "$note"

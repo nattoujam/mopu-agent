@@ -1,15 +1,10 @@
 import std/[asyncdispatch, json, math, options, os, posix, strutils, times]
-import console_state
+import console_state, process
 
 const
   MinInterval* = 60
   MaxInterval* = 86400
   RunsKeep = 200
-
-var POSIX_SPAWN_SETSID {.importc, header: "<spawn.h>".}: cint
-var environ {.importc.}: cstringArray
-proc posix_spawn_file_actions_addchdir_np(fa: var Tposix_spawn_file_actions, path: cstring): cint {.
-  importc, header: "<spawn.h>".}
 
 type AnsiCode = tuple[start, stop: int, params: seq[string]]
 
@@ -167,31 +162,11 @@ proc requestRun*(s: Scheduler, retry: Option[Retry]): bool =
   s.wakeUp()
   true
 
-# osproc の startProcess では、setsid と出力先のファイルを指定できず、addSignal が
-# block した SIGTERM のマスクも子に引き継がれるため、posix_spawn で起動している。
 proc spawnPoll(argv: seq[string], logPath: string): Pid =
-  var fa: Tposix_spawn_file_actions
-  var attr: Tposix_spawnattr
-  discard posix_spawn_file_actions_init(fa)
-  discard posix_spawnattr_init(attr)
-  defer:
-    discard posix_spawn_file_actions_destroy(fa)
-    discard posix_spawnattr_destroy(attr)
-  discard posix_spawn_file_actions_addopen(fa, 0, "/dev/null", O_RDONLY, 0)
-  discard posix_spawn_file_actions_addopen(fa, 1, logPath.cstring, O_WRONLY or O_CREAT or O_TRUNC, 0o644)
-  discard posix_spawn_file_actions_adddup2(fa, 1, 2)
-  discard posix_spawn_file_actions_addchdir_np(fa, agentDir.cstring)
-  var mask: Sigset
-  discard sigemptyset(mask)
-  discard posix_spawnattr_setsigmask(attr, mask)
-  discard posix_spawnattr_setflags(attr, POSIX_SPAWN_SETSID or POSIX_SPAWN_SETSIGMASK)
-  let args = allocCStringArray(argv)
-  defer: deallocCStringArray(args)
-  let rc = posix_spawn(result, argv[0].cstring, fa, attr, args, environ)
-  if rc != 0:
-    raiseOSError(OSErrorCode(rc))
+  spawn(argv, SpawnOptions(stdout: Output(path: logPath), stderrToStdout: true, cwd: agentDir,
+                           newSession: true))
 
-proc waitExit(pid: Pid): Future[int] {.async.} =
+proc waitPoll(pid: Pid): Future[int] {.async.} =
   var status: cint
   while true:
     let r = waitpid(pid, status, WNOHANG)
@@ -218,7 +193,7 @@ proc execute(s: Scheduler, trigger: string, retry: Option[Retry]) {.async.} =
                  "retry_number": retryNumber, "retry_repo": retryRepo}
   var exitCode: int
   try:
-    exitCode = await waitExit(spawnPoll(argv, path))
+    exitCode = await waitPoll(spawnPoll(argv, path))
   except OSError as e:
     let f = open(path, fmAppend)
     f.writeLine "poll.sh を起動できませんでした: " & e.msg

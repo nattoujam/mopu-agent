@@ -1,21 +1,6 @@
 import std/[algorithm, json, options, os, posix, strutils, times]
-
-let
-  agentDir* = (let d = getEnv("AGENT_DIR"); if d.len > 0: d else: getAppDir().parentDir)
-  stateDir* = agentDir / "state"
-  logsDir* = agentDir / "logs"
-  runLogDir* = logsDir / "console"
-  webDir* = agentDir / "web"
-  settingsFile* = stateDir / "settings.json"
-  runsFile* = stateDir / "console-runs.jsonl"
-  spendFile* = stateDir / "spend.jsonl"
-  loopMetricsFile* = stateDir / "loop-metrics.json"
-  pollLock* = stateDir / "poll.lock"
-  secretsDir* = stateDir / "secrets"
-  appKeyFile* = secretsDir / "github-app.pem"
-  appCheck* = agentDir / "tools" / "app-check"
-  notifyFile* = secretsDir / "nextcloud.json"
-  notifySender* = agentDir / "bin" / "notify"
+import paths
+export paths
 
 var
   LOCK_EX {.importc, header: "<sys/file.h>".}: cint

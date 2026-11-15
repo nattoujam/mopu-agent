@@ -372,13 +372,12 @@ proc inspect*(wt, rf, baseBranch: string): JsonNode =
   let ci = if apRuns in applies: apRuns elif apUnknown in applies: apUnknown else: apSkips
   %*{"ci": $ci, "files": files, "workflows": workflows, "test_changes": testChanges}
 
-when isMainModule:
-  let args = commandLineParams()
+proc ciGateMain*(args: seq[string]): int =
   if args.len != 4 or args[0] != "inspect":
-    stderr.writeLine "使い方: ci_gate inspect <worktree> <origin/BASE_BRANCH> <BASE_BRANCH>"
-    quit 1
+    stderr.writeLine "使い方: ci-gate inspect <worktree> <origin/BASE_BRANCH> <BASE_BRANCH>"
+    return 1
   try:
     stdout.writeLine $inspect(args[1], args[2], args[3])
   except OSError as e:
     stderr.writeLine e.msg
-    quit 1
+    return 1

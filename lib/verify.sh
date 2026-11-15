@@ -54,7 +54,7 @@ wait_ci() {
     ci_result unverified "コミットメッセージで CI を飛ばしている"
     return
   fi
-  if ! inspect=$("$AGENT_DIR/bin/ci_gate" inspect "$TASK_WT" "$ref" "$BASE_BRANCH" 2>/dev/null); then
+  if ! inspect=$("$MOPU_BIN" ci-gate inspect "$TASK_WT" "$ref" "$BASE_BRANCH" 2>/dev/null); then
     ci_result unverified "CI が動くかを判定できなかった"
     return
   fi
@@ -94,7 +94,7 @@ wait_ci() {
 # 変更を書いた会話を共有しない critic に確かめさせる
 run_critic() {
   local out
-  out=$(MOPU_TASK_DIR="$TASK_DIR" MOPU_BASE_BRANCH="$BASE_BRANCH" MOPU_LOG_DIR="$TASK_LOG" "$AGENT_DIR/tools/critic")
+  out=$(MOPU_TASK_DIR="$TASK_DIR" MOPU_BASE_BRANCH="$BASE_BRANCH" MOPU_LOG_DIR="$TASK_LOG" "$MOPU_BIN" critic)
   jq -e '.verdict' <<<"$out" >/dev/null 2>&1 || out='{"verdict":"error","reasons":["critic の出力を読めなかった"],"cost_usd":0}'
   verify_update '.critic = $o' --argjson o "$out"
   TASK_COST=$(jq -n --argjson a "$TASK_COST" --argjson c "$(jq '.cost_usd // 0' <<<"$out")" '$a + $c')

@@ -85,7 +85,7 @@ declare -A default_labels=(
   [[ -n ${APP_ID:-} && -n ${APP_PRIVATE_KEY:-} ]] || exit 0
   key="${APP_PRIVATE_KEY/#\~/$HOME}"
   [[ -f $key ]] || { warn "APP_PRIVATE_KEY が見つからないため App は移行しません: $key"; exit 0; }
-  if ! info=$("$AGENT_DIR/tools/app-check" "$APP_ID" "$key"); then
+  if ! info=$("$MOPU_BIN" app-check "$APP_ID" "$key"); then
     warn "App ID と秘密鍵の組を確認できなかったため App は移行しません。コンソールから登録してください"
     exit 0
   fi

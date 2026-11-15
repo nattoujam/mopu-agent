@@ -26,7 +26,7 @@ proc run(sub: string, args: seq[string], ws: Workspace): string =
   env["COMMENT_MARKER"] = "<!-- mopu-agent -->"
   env["LAST_POLL_FILE"] = ws.dir / "last-poll"
   env["SEEN_FILE"] = ws.seenFile
-  let p = startProcess(Root / "bin" / "discover", args = @[sub] & args, env = env, options = {})
+  let p = startProcess(Root / "bin" / "mopu", args = @["discover", sub] & args, env = env, options = {})
   defer: p.close()
   result = p.outputStream.readAll()
   discard p.errorStream.readAll()

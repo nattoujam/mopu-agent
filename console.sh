@@ -15,4 +15,4 @@ build_tools || die "bin/ のビルドに失敗しました"
 
 export AGENT_DIR CONSOLE_HOST CONSOLE_PORT CONSOLE_ALLOW_REMOTE
 
-exec "$AGENT_DIR/bin/console"
+exec "$MOPU_BIN" console

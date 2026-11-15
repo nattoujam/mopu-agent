@@ -1,4 +1,4 @@
-import std/[httpclient, json, openssl, strutils, sysrand, uri]
+import std/[httpclient, json, openssl, sequtils, strutils, sysrand, uri]
 
 type Config = object
   url, room, secret: string
@@ -42,17 +42,15 @@ proc send(config: Config, message: string, silent: bool) =
   if not res.code.is2xx:
     raise newException(IOError, "HTTP " & $res.code.int & ": " & res.body[0 ..< min(300, res.body.len)])
 
-when isMainModule:
-  import std/[os, sequtils]
-  let args = commandLineParams()
+proc notifyMain*(args: seq[string]): int =
   let rest = if args.len > 1: args[1 .. ^1] else: @[]
   let silent = "--silent" in rest
   let message = rest.filterIt(it != "--silent").join(" ")
   if args.len == 0 or message.len == 0:
     stderr.writeLine "使い方: notify <設定ファイル> [--silent] <本文>"
-    quit 1
+    return 1
   try:
     send(readConfig(args[0]), message, silent)
   except CatchableError as e:
     stderr.writeLine e.msg
-    quit 1
+    return 1

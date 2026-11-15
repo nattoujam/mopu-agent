@@ -568,8 +568,7 @@ proc initSeenBaseline(cfg: Config) =
   writeFile(cfg.lastPollFile, utcStamp(getTime()) & "\n")
   log "初回実行のため、これ以降に投稿されたコメントのみを対象にします"
 
-proc main() =
-  let args = commandLineParams()
+proc discoverMain*(args: seq[string]) =
   let sub = if args.len > 0: args[0] else: ""
   let cfg = loadConfig()
   case sub
@@ -582,6 +581,3 @@ proc main() =
   else:
     stderr.writeLine "使い方: discover labeled|comments|open-branches|mark-seen <id>|init-baseline|learn-source"
     quit 1
-
-when isMainModule:
-  main()

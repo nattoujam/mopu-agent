@@ -40,7 +40,7 @@ asyncCheck acceptLoop()
 proc notify(args: varargs[string]): tuple[code: int, stderr: string] =
   let config = createTempDir("notify-test-", "") / "nextcloud.json"
   writeFile(config, $(%*{"url": baseUrl & "/", "room": Room, "secret": Secret}))
-  let p = startProcess(Root / "bin" / "notify", args = @[config] & @args)
+  let p = startProcess(Root / "bin" / "mopu", args = @["notify", config] & @args)
   defer: p.close()
   while p.running:
     poll(20)

@@ -40,11 +40,14 @@ die()  { err "$*"; exit 1; }
 # shellcheck disable=SC2034  # run-task.sh で参照
 PHASE_FILE_NAME='phases.jsonl'
 TASK_FILE_NAME='task.json'
+OUTCOME_FILE_NAME='.mopu-agent-outcome.json'
+# hook は自分のパスを /proc/self/exe から得るので、設定に書くパスも symlink を解決しておく
+MOPU_BIN="$(realpath -m -- "$AGENT_DIR/bin/mopu")"
 
 notify() {
   [[ -f $NOTIFY_FILE ]] || return 0
   local out
-  out=$("$AGENT_DIR/bin/notify" "$NOTIFY_FILE" "$@" 2>&1) \
+  out=$("$MOPU_BIN" notify "$NOTIFY_FILE" "$@" 2>&1) \
     || warn "Nextcloud Talk に通知できませんでした: $out"
 }
 

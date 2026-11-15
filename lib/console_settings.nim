@@ -9,7 +9,7 @@ type
   SettingsError = object of ValueError
     field: string
 
-let schema* = parseJson(readFile(agentDir / "settings" / "schema.json"))
+let schema* = parseJson(readFile(schemaFile))
 
 proc reply*(body: JsonNode, code = 200): Reply =
   Reply(code: code, body: body)
@@ -306,7 +306,7 @@ proc registerApp(appId: BiggestInt, pem: string): Future[Reply] {.async.} =
   let tmp = writeSecretTmp(".github-app.pem", if pem.endsWith("\n"): pem else: pem & "\n")
   var info: JsonNode
   try:
-    let r = await runAsync(appCheck, @[$appId, tmp], 60_000)
+    let r = await runAsync(mopuBin, @["app-check", $appId, tmp], 60_000)
     if r.timedOut:
       return errorReply(504, "GitHub への確認がタイムアウトしました", field)
     if r.exitCode != 0:
@@ -389,9 +389,9 @@ proc registerNotify(url, room, secret: string): Future[Reply] {.async.} =
   try:
     var r: RunResult
     try:
-      r = await runAsync(notifySender, @[tmp, "mopu-agent の通知を登録しました"], 30_000)
+      r = await runAsync(mopuBin, @["notify", tmp, "mopu-agent の通知を登録しました"], 30_000)
     except OSError as e:
-      return errorReply(500, "bin/notify を起動できません: " & e.msg)
+      return errorReply(500, "mopu notify を起動できません: " & e.msg)
     if r.timedOut:
       return errorReply(504, "Nextcloud への送信がタイムアウトしました")
     if r.exitCode != 0:

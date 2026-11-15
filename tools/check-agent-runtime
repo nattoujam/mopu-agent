@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # run-task.sh が頼っている Claude Code の挙動を実測する。Claude Code を更新したら実行する。claude -p を 2 回呼ぶ
 #  - sandbox の中の Bash が dontAsk で自動で許可される（autoAllowBashIfSandboxed）
-#  - Stop hook（tools/phase-gate）が終える条件を満たさない呼び出しを差し戻す
-#  - PreToolUse hook（tools/phase-guard）が把握の state で出口ファイル以外への書き込みを拒む
+#  - Stop hook（mopu hook phase-gate）が終える条件を満たさない呼び出しを差し戻す
+#  - PreToolUse hook（mopu hook phase-guard）が把握の state で出口ファイル以外への書き込みを拒む
 set -euo pipefail
 
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,11 +16,11 @@ mkdir -p "$wt" "$dir/log"
 git -C "$wt" init -q
 git -C "$wt" -c user.name=probe -c user.email=probe@localhost commit -q --allow-empty -m init
 
-jq --arg wt "$wt" --arg tools "$AGENT_DIR/tools" \
+jq --arg wt "$wt" --arg mopu "$MOPU_BIN" \
   '.permissions.allow += ["Edit(/\($wt)/**)"]
    | .sandbox.filesystem = {allowWrite: [$wt]}
-   | .hooks.PreToolUse = [{matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($tools)/phase-guard"}]}]
-   | .hooks.Stop = [{hooks: [{type: "command", command: "\($tools)/phase-gate"}]}]' \
+   | .hooks.PreToolUse = [{matcher: "Edit|Write|NotebookEdit|Bash", hooks: [{type: "command", command: "\($mopu) hook phase-guard"}]}]
+   | .hooks.Stop = [{hooks: [{type: "command", command: "\($mopu) hook phase-gate"}]}]' \
   "$AGENT_DIR/settings/agent-settings.json" > "$dir/settings.json"
 
 # 使い方: probe <state> <本文>

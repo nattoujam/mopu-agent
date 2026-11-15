@@ -4,7 +4,7 @@ import console_dump, console_scheduler, console_settings, console_state, console
 
 let allowRemote = getEnv("CONSOLE_ALLOW_REMOTE") == "1"
 var allowedHosts: seq[string]
-let scheduler = newScheduler()
+var scheduler: Scheduler
 
 proc spendSummary(): JsonNode =
   var byRepo: Table[string, (float, int)]
@@ -354,6 +354,7 @@ proc acceptLoop(server: AsyncHttpServer) {.async.} =
         raise
 
 proc main(): Future[int] {.async.} =
+  scheduler = newScheduler()
   let host = (let h = getEnv("CONSOLE_HOST"); if h.len > 0: h else: "127.0.0.1")
   let port = (let p = getEnv("CONSOLE_PORT"); if p.len > 0: parseInt(p) else: 8787)
   if host notin ["127.0.0.1", "::1", "localhost"] and not allowRemote:
@@ -394,5 +395,5 @@ proc main(): Future[int] {.async.} =
       log "待機を打ち切りました。poll.sh はバックグラウンドで継続します"
   0
 
-when isMainModule:
-  quit waitFor main()
+proc consoleMain*(): int =
+  waitFor main()

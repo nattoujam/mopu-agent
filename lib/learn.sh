@@ -148,8 +148,8 @@ learn_schema() {
 learn_agent_settings() {
   local task_dir="$1" out="$2" actions_dir="$3"
   build_agent_settings "$task_dir" "$out.base" || return 1
-  jq --arg tools "$AGENT_DIR/tools" --arg actions "$actions_dir" \
-    '.permissions.allow |= (map(select((startswith("Edit(") or contains($tools)) | not))
+  jq --arg mopu "$MOPU_BIN" --arg actions "$actions_dir" \
+    '.permissions.allow |= (map(select((startswith("Edit(") or contains($mopu)) | not))
                             + ["Read(\($actions | sub("^/"; "//"))/**)"])
      | .sandbox.excludedCommands = []
      | .sandbox.filesystem.allowWrite = []

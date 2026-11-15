@@ -136,11 +136,10 @@ source "$AGENT_DIR/lib/budget.sh"
 source "$AGENT_DIR/lib/workspace.sh"
 source "$AGENT_DIR/lib/plan.sh"
 source "$AGENT_DIR/lib/project-memory.sh"
-source "$AGENT_DIR/lib/outcome.sh"
 source "$AGENT_DIR/lib/verify.sh"
 source "$AGENT_DIR/lib/run-task.sh"
 source "$AGENT_DIR/lib/learn.sh"
-discover() { "$AGENT_DIR/bin/discover" "$@"; }
+discover() { "$MOPU_BIN" discover "$@"; }
 
 # 親から呼ばれたときは、親が開いた fd 9 をそのまま使う。開き直すと別の
 # ロックとして扱われ、親自身が握っているロックとぶつかる
