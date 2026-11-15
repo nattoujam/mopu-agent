@@ -30,7 +30,7 @@ SECRETS_DIR = STATE_DIR / "secrets"
 APP_KEY_FILE = SECRETS_DIR / "github-app.pem"
 APP_CHECK = AGENT_DIR / "tools" / "app-check"
 NOTIFY_FILE = SECRETS_DIR / "nextcloud.json"
-NOTIFY_SENDER = AGENT_DIR / "lib" / "notify.ts"
+NOTIFY_SENDER = AGENT_DIR / "bin" / "notify"
 MAX_BODY = 1024 * 1024
 
 # 60秒未満はポーリングというより連打で、gh のレート上限と利用枠を無駄に削る
@@ -408,13 +408,13 @@ def register_notify(url, room, secret):
             json.dump(config, fh)
         try:
             proc = subprocess.run(
-                ["node", str(NOTIFY_SENDER), str(tmp), "mopu-agent の通知を登録しました"],
+                [str(NOTIFY_SENDER), str(tmp), "mopu-agent の通知を登録しました"],
                 capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             raise AppError(504, "Nextcloud への送信がタイムアウトしました") from None
         except OSError as exc:
-            raise AppError(500, f"node を起動できません: {exc}") from None
+            raise AppError(500, f"bin/notify を起動できません: {exc}") from None
         if proc.returncode != 0:
             message = proc.stderr.strip().splitlines()[-1:] or ["送信できませんでした"]
             raise AppError(400, f"テストメッセージを送れませんでした: {message[0]}")

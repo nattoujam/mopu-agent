@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$AGENT_DIR/lib/common.sh"
+
+build_tools || die "bin/ のビルドに失敗しました"
+cd "$AGENT_DIR" || exit 1
+failed=0
+for t in tests/t*.nim; do
+  nim r --hints:off "$t" || failed=1
+done
+exit "$failed"

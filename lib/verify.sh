@@ -54,7 +54,7 @@ wait_ci() {
     ci_result unverified "コミットメッセージで CI を飛ばしている"
     return
   fi
-  if ! inspect=$(node "$AGENT_DIR/lib/ci-gate.ts" inspect "$TASK_WT" "$ref" "$BASE_BRANCH" 2>/dev/null); then
+  if ! inspect=$("$AGENT_DIR/bin/ci_gate" inspect "$TASK_WT" "$ref" "$BASE_BRANCH" 2>/dev/null); then
     ci_result unverified "CI が動くかを判定できなかった"
     return
   fi

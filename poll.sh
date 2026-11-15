@@ -57,6 +57,7 @@ if [[ -n $ONLY_REPO ]]; then
 fi
 
 require_tools
+build_tools || die "bin/ のビルドに失敗しました"
 
 poll_all_repos() {
   local -a repos
@@ -139,8 +140,7 @@ source "$AGENT_DIR/lib/outcome.sh"
 source "$AGENT_DIR/lib/verify.sh"
 source "$AGENT_DIR/lib/run-task.sh"
 source "$AGENT_DIR/lib/learn.sh"
-# タスク検出は lib/discover.ts。Node が型注釈を剥がして直接実行する
-discover() { node "$AGENT_DIR/lib/discover.ts" "$@"; }
+discover() { "$AGENT_DIR/bin/discover" "$@"; }
 
 # 親から呼ばれたときは、親が開いた fd 9 をそのまま使う。開き直すと別の
 # ロックとして扱われ、親自身が握っているロックとぶつかる

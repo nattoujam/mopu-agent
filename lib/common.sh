@@ -3,12 +3,12 @@
 AGENT_DIR="${AGENT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 export AGENT_DIR
 
-# shellcheck disable=SC2034  # discover.ts / run-task.sh で参照
+# shellcheck disable=SC2034  # discover.nim / run-task.sh で参照
 COMMENT_MARKER='<!-- mopu-agent -->'
 # 分解で作られた sub issue の目印。これが本文にある Issue は再分解させない
 # shellcheck disable=SC2034  # run-task.sh で参照
 SUB_ISSUE_MARKER='<!-- mopu-agent:sub-of'
-# shellcheck disable=SC2034  # discover.ts / run-task.sh / poll.sh で参照
+# shellcheck disable=SC2034  # discover.nim / run-task.sh / poll.sh で参照
 BRANCH_PREFIX='agent/issue-'
 # タスク用ディレクトリの中で worktree を置く場所。エージェントの cwd はここ
 # shellcheck disable=SC2034  # workspace.sh / run-task.sh で参照
@@ -44,7 +44,7 @@ TASK_FILE_NAME='task.json'
 notify() {
   [[ -f $NOTIFY_FILE ]] || return 0
   local out
-  out=$(node "$AGENT_DIR/lib/notify.ts" "$NOTIFY_FILE" "$@" 2>&1) \
+  out=$("$AGENT_DIR/bin/notify" "$NOTIFY_FILE" "$@" 2>&1) \
     || warn "Nextcloud Talk に通知できませんでした: $out"
 }
 
@@ -250,14 +250,14 @@ load_config() {
   LEARNED_FILE="$REPO_STATE_DIR/learned-prs.txt"
   mkdir -p "$REPO_STATE_DIR" "$WORKTREES_DIR" "$TASK_LOGS_DIR" "$AGENT_DIR/repos"
   touch "$SEEN_FILE"
-  # discover.ts は設定を解釈せず、ここで確定した値を環境変数から受け取る
+  # discover.nim は設定を解釈せず、ここで確定した値を環境変数から受け取る
   export REPO_SLUG REPO_DIR REPO_STATE_DIR WORKTREES_DIR TASK_LOGS_DIR SEEN_FILE SESSION_FILE LAST_POLL_FILE LEARNED_FILE
   export REPO TRIGGER_COMMAND LABEL_QUEUED ALLOWED_ACTORS BRANCH_PREFIX COMMENT_MARKER
 }
 
 require_tools() {
   local missing=()
-  for t in gh jq git flock timeout node bwrap socat; do
+  for t in gh jq git flock timeout nim bwrap socat; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   (( ${#missing[@]} == 0 )) || die "必要なコマンドがありません: ${missing[*]}"
@@ -265,6 +265,23 @@ require_tools() {
   # failIfUnavailable にしてあるので、ここで落とさないとタスクごとに同じ失敗を繰り返す
   bwrap --ro-bind / / --dev /dev --unshare-all true 2>/dev/null \
     || die "bwrap がユーザー名前空間を作れません。https://code.claude.com/docs/en/sandboxing を参照してください"
+}
+
+# nimble build ではなくここで作り直しを判定するのは、cron から呼ばれる poll.sh が、
+# git pull 後のソースより古いバイナリを動かさないため。
+build_tools() {
+  mkdir -p "$AGENT_DIR/bin" || return 1
+  (
+    flock 9 || exit 1
+    cd "$AGENT_DIR" || exit 1
+    local src bin
+    while read -r src; do
+      bin="bin/$(basename "$src" .nim)"
+      [[ -x $bin && -z $(find lib -name '*.nim*' -newer "$bin" -print -quit) ]] && continue
+      nim c --hints:off -d:release --out:"$bin.tmp" "$src" >&2 || exit 1
+      mv "$bin.tmp" "$bin"
+    done < <(grep -l '^when isMainModule' lib/*.nim)
+  ) 9>"$AGENT_DIR/bin/.build.lock"
 }
 
 is_allowed_actor() {

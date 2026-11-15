@@ -13,6 +13,14 @@ fake-agent でも、Issue の作成とラベルの操作は本物の GitHub に�
 
 学習は、`FAKE_AGENT_STRUCTURED` に返させる JSON を渡して確かめる。
 
+## Nim の stdlib を使うとき
+
+OS・プロセス・シグナル・ソケット・非同期 I/O に触る stdlib の proc（`std/posix`、`std/osproc`、`std/asyncdispatch`、`std/asynchttpserver`、`std/nativesockets` など）は、使う前に `$(asdf where nim)/lib/` のソースを読み、副作用を確かめてから書く。docstring に書かれていない副作用があり、テストでは気づきにくい。
+
+例: `addSignal` は `signalfd` を使うため、登録したシグナルをプロセス全体で block する。block は exec した子に引き継がれるので、そのまま poll.sh を起動すると poll.sh が SIGTERM を受け取れない。
+
+`std/strutils` や `std/sequtils` のように値を変換するだけで OS に触らない module は、ソースを読まなくてよい。
+
 ## Claude Code を更新したとき
 
 sandbox が作業ディレクトリに置く書き込み禁止の placeholder は、Claude Code のバージョンによって変わる。

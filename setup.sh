@@ -13,6 +13,7 @@ case "${1:-}" in
 esac
 
 require_tools
+build_tools || die "bin/ のビルドに失敗しました"
 load_global_config
 
 create_label() {
