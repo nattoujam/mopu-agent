@@ -6,7 +6,6 @@ source "$AGENT_DIR/lib/common.sh"
 
 require_tools
 build_tools || die "bin/ のビルドに失敗しました"
-command -v python3 >/dev/null 2>&1 || die "python3 が必要です"
 # shellcheck disable=SC1091
 [[ -f $AGENT_DIR/config.env ]] && source "$AGENT_DIR/config.env"
 
@@ -16,4 +15,4 @@ command -v python3 >/dev/null 2>&1 || die "python3 が必要です"
 
 export AGENT_DIR CONSOLE_HOST CONSOLE_PORT CONSOLE_ALLOW_REMOTE
 
-exec python3 "$AGENT_DIR/console.py"
+exec "$AGENT_DIR/bin/console"

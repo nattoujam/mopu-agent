@@ -18,8 +18,8 @@ flowchart LR
 - `bubblewrap` と `socat` — sandbox 用。Ubuntu 24.04 以降は AppArmor のプロファイルも要る（[Sandboxing](https://code.claude.com/docs/en/sandboxing)を参照）
 - `flock`
 - `timeout`
+- `tar` — Web コンソールのログのダウンロード用
 - `nim` — バージョンは `.tool-versions` で固定。`poll.sh`・`console.sh`・`setup.sh` が起動時に `bin/` へビルドする
-- `python3` — Web コンソール用（標準ライブラリのみ。追加パッケージは不要）
 
 ## セットアップ
 

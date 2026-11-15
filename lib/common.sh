@@ -257,7 +257,7 @@ load_config() {
 
 require_tools() {
   local missing=()
-  for t in gh jq git flock timeout nim bwrap socat; do
+  for t in gh jq git flock timeout tar nim bwrap socat; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   (( ${#missing[@]} == 0 )) || die "必要なコマンドがありません: ${missing[*]}"

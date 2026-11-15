@@ -6,6 +6,5 @@ logs/
 state/
 APP_PRIVATE_KEY
 *.pem
-__pycache__/
 bin/
 CLAUDE.local.md

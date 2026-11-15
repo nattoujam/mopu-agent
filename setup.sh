@@ -48,12 +48,5 @@ for r in "${repos[@]}"; do
   ( setup_repo "$r" ) || { warn "$r のセットアップに失敗しました"; failed=1; }
 done
 
-log "任意の依存を確認します"
-if command -v python3 >/dev/null 2>&1; then
-  log "  ✓ python3 (Web コンソール)"
-else
-  warn "  ✗ python3 が見つかりません。Web コンソールを使うなら sudo pacman -S python でインストールしてください"
-fi
-
 (( failed )) && die "セットアップに失敗したリポジトリがあります"
 log "セットアップ完了。./poll.sh --dry-run で動作を確認してください"
