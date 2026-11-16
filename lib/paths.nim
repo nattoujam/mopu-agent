@@ -1,4 +1,5 @@
 import std/os
+from std/posix import getuid
 
 proc defaultDataDir(): string =
   let home = getEnv("MOPU_HOME")
@@ -25,6 +26,9 @@ let
   appKeyFile* = secretsDir / "github-app.pem"
   notifyFile* = secretsDir / "nextcloud.json"
   notifyStateFile* = stateDir / "notify-state.json"
+  # dataDir の下に置かないのは、Claude Code が TMPDIR の下に作る claude-<uid> のパスが
+  # 44 byte を超えると、sandbox の TMPDIR を OS 既定の temp ディレクトリに切り替えるため
+  agentTmpDir* = "/tmp/mopu-" & $getuid()
 
 const repoSubdir* = "repo"
 

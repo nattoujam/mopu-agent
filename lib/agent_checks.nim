@@ -1,5 +1,22 @@
 import std/[algorithm, json, os, sequtils, sets, strutils, tempfiles]
-import log, paths, process, resources, workspace
+from std/posix import Stat, stat, S_ISSOCK, kill, SIGTERM
+import agent, log, paths, process, resources, workspace
+
+const SocketProbe = """
+out=socket-probe.txt
+echo ran > "$out"
+own="$TMPDIR/mopu-probe.sock"
+socat -u OPEN:/dev/null UNIX-LISTEN:"$own" &
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$own" ] && break; sleep 0.2; done
+socat -u UNIX-CONNECT:"$own" STDOUT && echo own >> "$out"
+kill $! 2>/dev/null
+socat -u UNIX-CONNECT:"$1" STDOUT && echo host >> "$out"
+curl -sf -o /dev/null https://registry.npmjs.org/ && echo network >> "$out"
+"""
+
+proc isSocket(path: string): bool =
+  var st: Stat
+  stat(path.cstring, st) == 0 and S_ISSOCK(st.st_mode)
 
 proc claudeBin(): string = getEnv("CLAUDE_BIN", "claude")
 
@@ -14,7 +31,9 @@ proc initRepo(dir: string) =
   discard gitRun(dir, "-c", "user.name=probe", "-c", "user.email=probe@localhost", "commit", "-q", "--allow-empty", "-m", "init")
 
 proc checkAgentRuntime(): int =
-  let dir = createTempDir("mopu-runtime-", "")
+  if not prepareAgentTmpDir():
+    return 1
+  let dir = createTempDir("mopu-runtime-", "", agentTmpDir)
   defer: removeDir(dir)
   let wt = dir / repoSubdir
   createDir(wt)
@@ -23,6 +42,7 @@ proc checkAgentRuntime(): int =
   var s = parseJson(AgentSettingsJson)
   s["permissions"]["allow"].add %("Edit(/" & wt & "/**)")
   s["sandbox"]["filesystem"] = %*{"allowWrite": [wt]}
+  confineUnixSockets(s)
   s["hooks"] = %*{
     "PreToolUse": [{"matcher": "Edit|Write|NotebookEdit|Bash",
                     "hooks": [{"type": "command", "command": mopuBin & " hook phase-guard"}]}],
@@ -35,7 +55,7 @@ proc checkAgentRuntime(): int =
     discard run(probeArgs(prompt, dir / "settings.json"), SpawnOptions(
       cwd: wt, stdout: Output(path: "/dev/null"), unsetEnv: @["GH_TOKEN", "GITHUB_TOKEN"],
       env: @[("MOPU_PHASE", state), ("MOPU_TASK_DIR", dir), ("MOPU_LOG_DIR", dir / "log"),
-             ("MOPU_HEAD_START", gitOut(wt, "rev-parse", "HEAD"))]))
+             ("MOPU_HEAD_START", gitOut(wt, "rev-parse", "HEAD"))] & agentTmpEnv()))
 
   log claudeVersion()
   probe("implement", "Bash ツールで次のコマンドを 1 回だけ実行してから終える。ほかのことはしない: echo probe > probe.txt")
@@ -57,6 +77,43 @@ proc checkAgentRuntime(): int =
   else:
     err "✗ PreToolUse hook が把握の state での書き込みを拒まなかった"
     result = 1
+
+  let hostDir = createTempDir("mopu-socket-", "", "/tmp")
+  defer: removeDir(hostDir)
+  let hostSock = hostDir / "host.sock"
+  let listener = spawn(@["socat", "-u", "OPEN:/dev/null", "UNIX-LISTEN:" & hostSock],
+                       SpawnOptions(stderr: Output(path: "/dev/null")))
+  defer:
+    discard kill(listener, SIGTERM)
+    discard waitExit(listener)
+  for _ in 1 .. 20:
+    if isSocket(hostSock): break
+    sleep 100
+  writeFile(wt / "socket-probe.sh", SocketProbe)
+  probe("implement", "Bash ツールで次のコマンドを 1 回だけ実行してから終える。ほかのことはしない: sh socket-probe.sh " & hostSock)
+  let found = (try: readFile(wt / "socket-probe.txt").splitLines except IOError: @[])
+  if not isSocket(hostSock):
+    err "✗ ホスト側に検査用の socket を作れなかった（socat を確かめる）"
+    result = 1
+  elif "ran" notin found:
+    err "✗ sandbox の中で socket の検査が実行されなかった"
+    result = 1
+  else:
+    if "own" in found:
+      log "✓ sandbox の中で TMPDIR に Unix socket を作ってつなげた"
+    else:
+      err "✗ sandbox の中で TMPDIR の Unix socket を使えなかった。lib/agent.nim の confineUnixSockets と agentTmpEnv を確かめる"
+      result = 1
+    if "host" notin found:
+      log "✓ /tmp に置いたホストの socket には sandbox からつながらなかった"
+    else:
+      err "✗ /tmp に置いたホストの socket に sandbox からつながった。lib/agent.nim の confineUnixSockets を確かめる"
+      result = 1
+    if "network" in found:
+      log "✓ /tmp を読めなくしても、sandbox から proxy を通して registry.npmjs.org につながった"
+    else:
+      err "✗ sandbox から registry.npmjs.org につながらなかった。Claude Code が proxy の socket を TMPDIR の外に置いていないか確かめる"
+      result = 1
 
 proc checkSandboxPlaceholders(): int =
   const output = ".mopu-placeholder-probe"

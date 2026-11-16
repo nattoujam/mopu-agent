@@ -1,4 +1,5 @@
 import std/[json, os, strutils]
+from std/posix import Stat, lstat, mkdir, getuid, S_ISDIR
 import budget, config, github_app, hooks, log, paths, process, resources
 
 type PollState* = ref object
@@ -19,6 +20,31 @@ proc abs(path: string): string =
   if path.startsWith("/"): "/" & path else: path
 
 proc command(sub: string): JsonNode = %*{"type": "command", "command": mopuBin & " " & sub}
+
+proc prepareAgentTmpDir*(): bool =
+  discard mkdir(agentTmpDir.cstring, 0o700)
+  var st: Stat
+  if lstat(agentTmpDir.cstring, st) != 0 or not S_ISDIR(st.st_mode) or st.st_uid != getuid() or
+      (st.st_mode.cint and 0o777) != 0o700:
+    err "エージェント用の TMPDIR を自分だけが使えるディレクトリとして用意できません: " & agentTmpDir
+    return false
+  true
+
+proc agentTmpEnv*(): seq[(string, string)] =
+  @[("TMPDIR", agentTmpDir), ("CLAUDE_CODE_TMPDIR", agentTmpDir)]
+
+# Unix socket をすべて許すと、sandbox から見えるホストの socket（tmux、D-Bus など）に
+# つながり、sandbox の外でコマンドを実行できる。tsx などが TMPDIR に置く socket を使えるように
+# このリスクを飲み、ホストが socket を置く /run と /tmp を読めなくして、つながる先を
+# エージェント用の TMPDIR の中に限っている。$HOME の下の socket は塞いでいない
+proc confineUnixSockets*(s: JsonNode) =
+  s["sandbox"]["network"]["allowAllUnixSockets"] = %true
+  let fs = s["sandbox"]["filesystem"]
+  if fs{"denyRead"} == nil:
+    fs["denyRead"] = newJArray()
+  fs["denyRead"].add %"/run"
+  fs["denyRead"].add %"/tmp"
+  fs["allowRead"] = %*[agentTmpDir]
 
 # パス制限は絶対パスでしか正しく効かないため、タスクごとに生成する
 # （"//" が絶対パスのプレフィックス）。Write ルールは Claude Code が参照しない
@@ -65,6 +91,7 @@ proc buildAgentSettings*(cfg: Config, taskDir, output: string): bool =
                   admin / "commondir", admin / "gitdir"],
     "denyRead": secrets,
   }
+  confineUnixSockets(s)
   writeFile(output, s.pretty(2) & "\n")
   true
 
@@ -96,7 +123,8 @@ proc invokeAgent*(cfg: Config, inv: Invocation): int =
     env.add ("GH_TOKEN", inv.ghToken)
   # ~/.npm や ~/.cache は sandbox から書けないので、キャッシュを worktree に持たせる
   env.add [("npm_config_cache", wt / ".npm-cache"), ("XDG_CACHE_HOME", wt / ".cache")]
-  if not dirExists(wt):
+  env.add agentTmpEnv()
+  if not dirExists(wt) or not prepareAgentTmpDir():
     return 1
   # sandbox 内の Bash は prompt を経ずに自動承認されるので dontAsk に拒否されない
   run(args, SpawnOptions(
